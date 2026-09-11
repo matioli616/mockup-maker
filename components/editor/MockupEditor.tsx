@@ -20,12 +20,12 @@ const GARMENT: GarmentConfig = {
   back: {
     // Foto original vinha "menor" no frame que a da frente (mesma peça, mais
     // afastada da câmera) — reenquadrada (upscale + crop central 124%) pra
-    // bater na mesma escala/posição da frente. Por isso a printArea é
-    // idêntica à da frente agora.
+    // bater na mesma escala/posição da frente. printArea maior/mais
+    // centralizada que a da frente por ajuste manual no editor.
     image: '/garments/tshirt-back.jpg',
     imageWidth: 720,
     imageHeight: 1280,
-    printArea: { x: 185, y: 400, width: 350, height: 550 },
+    printArea: { x: 164, y: 396, width: 376, height: 640 },
   },
 }
 
@@ -776,6 +776,25 @@ export default function MockupEditor() {
                 e.target.value = ''
               }}
             />
+            {designSrc && (
+              <button
+                onClick={removeDesign}
+                style={{
+                  width: '100%',
+                  marginTop: '8px',
+                  padding: '9px',
+                  border: '1px solid var(--border)',
+                  borderRadius: '8px',
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                  fontWeight: 700,
+                }}
+              >
+                🗑 Remover estampa
+              </button>
+            )}
           </div>
 
           {/* Lote */}
@@ -965,6 +984,22 @@ export default function MockupEditor() {
                   onChange={(v) => updateTransform({ height: v })}
                   display={`${Math.round(transform.height)}px`}
                 />
+                {scale > 0 && (
+                  <p
+                    style={{
+                      fontSize: '0.68rem',
+                      color: 'var(--text-muted)',
+                      margin: 0,
+                      lineHeight: 1.5,
+                    }}
+                  >
+                    Coordenada na imagem (720×1280):{' '}
+                    <b style={{ color: 'var(--text)' }}>
+                      x={Math.round(transform.x / scale)} y={Math.round(transform.y / scale)} w=
+                      {Math.round(transform.width / scale)} h={Math.round(transform.height / scale)}
+                    </b>
+                  </p>
+                )}
               </div>
 
               <div style={{ height: '1px', background: 'var(--border)' }} />
