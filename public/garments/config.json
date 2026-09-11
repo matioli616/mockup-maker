@@ -1,0 +1,27 @@
+{
+  "tshirt": {
+    "name": "Oversized Tee",
+    "front": {
+      "image": "/garments/tshirt-front.jpg",
+      "imageWidth": 720,
+      "imageHeight": 1280,
+      "printArea": {
+        "x": 185,
+        "y": 300,
+        "width": 350,
+        "height": 550
+      }
+    },
+    "back": {
+      "image": "/garments/tshirt-back.jpg",
+      "imageWidth": 720,
+      "imageHeight": 1280,
+      "printArea": {
+        "x": 175,
+        "y": 280,
+        "width": 370,
+        "height": 590
+      }
+    }
+  }
+}
