@@ -1,5 +1,9 @@
 export type ViewSide = 'front' | 'back'
 
+// Rótulo em pt-BR pro lado, usado em nomes de arquivo exportados (ex.:
+// "001-frente.png") e no CSV de importação do Shopify.
+export const VIEW_LABEL: Record<ViewSide, string> = { front: 'frente', back: 'verso' }
+
 export type BlendModeOption = 'source-over' | 'screen' | 'overlay' | 'multiply'
 
 export interface PrintArea {

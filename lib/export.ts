@@ -1,5 +1,5 @@
 import { loadImg } from '@/lib/image'
-import type { BlendModeOption, GarmentView } from '@/types/mockup'
+import { VIEW_LABEL, type BlendModeOption, type GarmentView, type ViewSide } from '@/types/mockup'
 
 export type ExportFormat = 'original' | 'feed' | 'story'
 
@@ -32,7 +32,8 @@ export interface ComposeOptions {
   realism: boolean
 }
 
-type ExportOptions = ComposeOptions
+// view: só usada pro nome do arquivo baixado (composeMockup não precisa dela).
+type ExportOptions = ComposeOptions & { view: ViewSide }
 
 // Cor de fundo pros formatos de post — amostra um pixel do canto da peça
 // pra emendar sem costura visível com o fundo já presente na foto.
@@ -155,5 +156,5 @@ export async function composeMockup(opts: ComposeOptions): Promise<HTMLCanvasEle
 
 export async function exportMockup(opts: ExportOptions): Promise<void> {
   const canvas = await composeMockup(opts)
-  downloadCanvas(canvas, `mockup-${opts.format}-${Date.now()}.png`)
+  downloadCanvas(canvas, `mockup-${VIEW_LABEL[opts.view]}-${opts.format}-${Date.now()}.png`)
 }
