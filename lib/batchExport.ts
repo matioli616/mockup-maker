@@ -2,24 +2,22 @@ import JSZip from 'jszip'
 import { composeMockup, type ExportFormat } from '@/lib/export'
 import { fileToDataURL } from '@/lib/image'
 import { applyBlackKnockout, type KnockoutOptions } from '@/lib/imageProcessing'
-import type { BlendModeOption, GarmentView } from '@/types/mockup'
+import { VIEW_LABEL, type DesignTransform, type GarmentView, type ViewSide } from '@/types/mockup'
 
 export interface BatchItem {
   file: File
   name: string
 }
 
+const VIEWS: ViewSide[] = ['front', 'back']
+
 export interface BatchOptions {
-  garmentView: GarmentView
-  displayX: number
-  displayY: number
-  displayW: number
-  displayH: number
+  garments: Record<ViewSide, GarmentView>
+  // transform de cada lado — os dois obrigatórios, já preenchidos assim que
+  // uma estampa é carregada (ver MockupEditor).
+  transforms: Record<ViewSide, DesignTransform>
   displayContainerW: number
   displayContainerH: number
-  rotation: number
-  opacity: number
-  blendMode: BlendModeOption
   format: ExportFormat
   realism: boolean
   knockout: KnockoutOptions
@@ -32,45 +30,46 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   })
 }
 
-function sanitizeName(name: string): string {
-  return name.replace(/\.[^./\\]+$/, '').replace(/[^a-zA-Z0-9_-]+/g, '-') || 'estampa'
-}
-
 export interface BatchResult {
   // nomes originais dos arquivos que falharam (imagem corrompida, etc.) —
   // o lote continua e baixa o .zip com o que deu certo.
   failed: string[]
 }
 
-// Aplica a MESMA posição/tamanho/rotação/opacidade/blend/realismo/knockout
-// já ajustados na primeira estampa a todas as outras do lote, e baixa um .zip.
+// Pra cada estampa do lote, gera frente E verso (mesma posição/config já
+// ajustada em cada lado) e numera pra casar produto = par de fotos na hora
+// de subir no Shopify: 001-frente.png + 001-verso.png, 002-frente.png, ...
 export async function exportBatch(items: BatchItem[], opts: BatchOptions): Promise<BatchResult> {
   const zip = new JSZip()
   const total = items.length
   const failed: string[] = []
 
   for (let i = 0; i < total; i++) {
+    const num = String(i + 1).padStart(3, '0')
     try {
       const raw = await fileToDataURL(items[i].file)
       const designSrc = await applyBlackKnockout(raw, opts.knockout)
-      const canvas = await composeMockup({
-        garmentView: opts.garmentView,
-        designSrc,
-        displayX: opts.displayX,
-        displayY: opts.displayY,
-        displayW: opts.displayW,
-        displayH: opts.displayH,
-        displayContainerW: opts.displayContainerW,
-        displayContainerH: opts.displayContainerH,
-        rotation: opts.rotation,
-        opacity: opts.opacity,
-        blendMode: opts.blendMode,
-        format: opts.format,
-        realism: opts.realism,
-      })
-      const blob = await canvasToBlob(canvas)
-      const filename = `${String(i + 1).padStart(3, '0')}-${sanitizeName(items[i].name)}.png`
-      zip.file(filename, blob)
+
+      for (const view of VIEWS) {
+        const t = opts.transforms[view]
+        const canvas = await composeMockup({
+          garmentView: opts.garments[view],
+          designSrc,
+          displayX: t.x,
+          displayY: t.y,
+          displayW: t.width,
+          displayH: t.height,
+          displayContainerW: opts.displayContainerW,
+          displayContainerH: opts.displayContainerH,
+          rotation: t.rotation,
+          opacity: t.opacity,
+          blendMode: t.blendMode,
+          format: opts.format,
+          realism: opts.realism,
+        })
+        const blob = await canvasToBlob(canvas)
+        zip.file(`${num}-${VIEW_LABEL[view]}.png`, blob)
+      }
     } catch (err) {
       // uma estampa ruim no lote não pode derrubar as outras 49
       console.error(`[batchExport] falha ao processar "${items[i].name}":`, err)

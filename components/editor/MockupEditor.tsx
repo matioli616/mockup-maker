@@ -6,6 +6,7 @@ import { Rnd } from 'react-rnd'
 import { exportBatch } from '@/lib/batchExport'
 import { exportMockup, type ExportFormat } from '@/lib/export'
 import { applyBlackKnockout, DEFAULT_KNOCKOUT, type KnockoutOptions } from '@/lib/imageProcessing'
+import { buildShopifyCsv, downloadCsv } from '@/lib/shopifyCsv'
 import type { BlendModeOption, DesignTransform, GarmentConfig, ViewSide } from '@/types/mockup'
 
 // ─── Garment config (inline para MVP) ────────────────────────────────────────
@@ -459,6 +460,7 @@ export default function MockupEditor() {
           blendMode: transform.blendMode,
           format,
           realism,
+          view,
         })
       } catch (err) {
         console.error('[MockupDrop] falha ao exportar mockup:', err)
@@ -486,25 +488,23 @@ export default function MockupEditor() {
 
   const clearBatch = useCallback(() => setBatchFiles([]), [])
 
+  // Lote precisa das duas posições prontas (frente e verso) — já são
+  // preenchidas nos dois lados assim que uma estampa é carregada.
+  const batchReady = !!transforms.front && !!transforms.back
+
   const runBatchExport = useCallback(
     async (format: ExportFormat) => {
-      if (!batchFiles.length || !transform || !containerSize.w) return
+      if (!batchFiles.length || !transforms.front || !transforms.back || !containerSize.w) return
       setBatchExporting(true)
       setBatchProgress({ done: 0, total: batchFiles.length })
       try {
         const result = await exportBatch(
           batchFiles.map((file) => ({ file, name: file.name })),
           {
-            garmentView: GARMENT[view],
-            displayX: transform.x,
-            displayY: transform.y,
-            displayW: transform.width,
-            displayH: transform.height,
+            garments: { front: GARMENT.front, back: GARMENT.back },
+            transforms: { front: transforms.front, back: transforms.back },
             displayContainerW: containerSize.w,
             displayContainerH: containerSize.h,
-            rotation: transform.rotation,
-            opacity: transform.opacity,
-            blendMode: transform.blendMode,
             format,
             realism,
             knockout,
@@ -524,8 +524,28 @@ export default function MockupEditor() {
         setBatchProgress(null)
       }
     },
-    [batchFiles, transform, containerSize.w, containerSize.h, view, realism, knockout, showError],
+    [batchFiles, transforms, containerSize.w, containerSize.h, realism, knockout, showError],
   )
+
+  // ─── CSV de importação do Shopify (metadados — sem imagem, ver lib/shopifyCsv) ──
+  const [csvVendor, setCsvVendor] = useState('')
+  const [csvType, setCsvType] = useState('Camiseta Oversized')
+  const [csvTags, setCsvTags] = useState('')
+  const [csvPrice, setCsvPrice] = useState('')
+  const [csvQty, setCsvQty] = useState('')
+
+  const downloadShopifyCsv = useCallback(() => {
+    if (!batchFiles.length) return
+    const rows = batchFiles.map((_, i) => ({
+      num: String(i + 1).padStart(3, '0'),
+      vendor: csvVendor,
+      productType: csvType,
+      tags: csvTags,
+      price: csvPrice,
+      inventoryQty: csvQty,
+    }))
+    downloadCsv(buildShopifyCsv(rows), `shopify-produtos-${Date.now()}.csv`)
+  }, [batchFiles, csvVendor, csvType, csvTags, csvPrice, csvQty])
 
   const garmentView = GARMENT[view]
   const printArea = garmentView.printArea
@@ -843,8 +863,10 @@ export default function MockupEditor() {
             {batchFiles.length > 0 && (
               <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
-                  {batchFiles.length} estampas carregadas — a 1ª já está no canvas. Ajuste a posição
-                  acima e gere o lote (mesma posição pra todas).
+                  {batchFiles.length} estampas carregadas — a 1ª já está no canvas. Ajuste a posição na
+                  frente <b style={{ color: 'var(--text)' }}>e</b> no verso (troca de lado acima) e gere
+                  o lote: sai frente + verso de cada estampa, numeradas (001-frente.png,
+                  001-verso.png...).
                 </p>
 
                 {batchExporting ? (
@@ -878,15 +900,15 @@ export default function MockupEditor() {
                       <button
                         key={f.value}
                         onClick={() => runBatchExport(f.value)}
-                        disabled={!transform}
+                        disabled={!batchReady}
                         style={{
                           width: '100%',
                           padding: '9px 12px',
-                          background: transform ? 'var(--surface2)' : 'transparent',
-                          color: transform ? 'var(--text)' : 'var(--text-muted)',
+                          background: batchReady ? 'var(--surface2)' : 'transparent',
+                          color: batchReady ? 'var(--text)' : 'var(--text-muted)',
                           border: '1px solid var(--border)',
                           borderRadius: '8px',
-                          cursor: transform ? 'pointer' : 'not-allowed',
+                          cursor: batchReady ? 'pointer' : 'not-allowed',
                           fontSize: '0.75rem',
                           fontWeight: 700,
                           textAlign: 'left',
@@ -914,6 +936,62 @@ export default function MockupEditor() {
                   }}
                 >
                   Limpar lote
+                </button>
+
+                {/* CSV de importação do Shopify — só metadados, sem imagem */}
+                <div style={{ height: '1px', background: 'var(--border)', margin: '4px 0' }} />
+                <p style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--text-muted)', margin: 0 }}>
+                  CSV SHOPIFY ({batchFiles.length} produtos)
+                </p>
+                <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                  Cria os produtos em rascunho (Configurações → Importar produtos). Imagem não vai no
+                  CSV — depois de importar, arraste os PNGs do .zip pra cada produto (número bate:
+                  estampa-001 ↔ 001-frente.png).
+                </p>
+                {(
+                  [
+                    ['Marca', csvVendor, setCsvVendor],
+                    ['Tipo', csvType, setCsvType],
+                    ['Tags (separadas por vírgula)', csvTags, setCsvTags],
+                    ['Preço', csvPrice, setCsvPrice],
+                    ['Estoque por produto', csvQty, setCsvQty],
+                  ] as const
+                ).map(([label, value, setter]) => (
+                  <label key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      {label}
+                    </span>
+                    <input
+                      type="text"
+                      value={value}
+                      onChange={(e) => setter(e.target.value)}
+                      style={{
+                        width: '100%',
+                        padding: '7px 10px',
+                        background: 'var(--surface2)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '6px',
+                        color: 'var(--text)',
+                        fontSize: '0.78rem',
+                      }}
+                    />
+                  </label>
+                ))}
+                <button
+                  onClick={downloadShopifyCsv}
+                  style={{
+                    width: '100%',
+                    padding: '9px 12px',
+                    background: 'var(--surface2)',
+                    color: 'var(--text)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontSize: '0.75rem',
+                    fontWeight: 700,
+                  }}
+                >
+                  ⬇ Baixar CSV Shopify
                 </button>
               </div>
             )}

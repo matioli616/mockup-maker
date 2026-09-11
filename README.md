@@ -32,11 +32,25 @@ o editor.
 ### Lote (várias estampas de uma vez)
 
 Na sidebar, em **Lote**, selecione várias imagens do mesmo tamanho (ex.: 50
-PNGs). A primeira carrega no canvas normalmente — posicione, redimensione,
-rotacione, ajuste opacidade/blend/realismo/remover-preto como de costume.
+PNGs). A primeira carrega no canvas normalmente — posicione na **frente**,
+troque pro **verso** e posicione lá também (cada lado guarda a própria
+posição/tamanho/rotação), ajuste opacidade/blend/realismo/remover-preto.
 Depois clique em **Gerar lote (.zip)** no formato desejado: o app aplica essa
-mesma configuração a cada uma das outras estampas e baixa um único `.zip` com
-todos os mockups (`001-nome.png`, `002-nome.png`, ...).
+mesma configuração de cada lado a todas as outras estampas e baixa um único
+`.zip` com frente **e** verso de cada uma, numeradas — `001-frente.png`,
+`001-verso.png`, `002-frente.png`, `002-verso.png`, ... — pronto pra subir
+como par de fotos de produto numa loja.
+
+### CSV de importação do Shopify
+
+Com um lote carregado, a sidebar mostra **CSV Shopify**: preenche marca,
+tipo, tags, preço e estoque (aplicado a todos os produtos do lote) e clica em
+**Baixar CSV Shopify**. Gera um `.csv` pronto pra importar em
+Configurações → Importar produtos, um produto por estampa (`estampa-001`,
+`estampa-002`, ...), como rascunho. O CSV **não leva imagem** — o Shopify só
+aceita imagem por URL pública nesse tipo de import, e este app não tem
+servidor. Depois de importar, arrasta os PNGs do `.zip` do lote pra cada
+produto: o número bate (`estampa-001` ↔ `001-frente.png`/`001-verso.png`).
 
 ### Atalhos de teclado (no editor)
 
@@ -84,9 +98,10 @@ components/editor/
   MockupEditor.tsx      editor completo (client component)
 lib/
   export.ts             composição garment + estampa + realismo, export PNG
-  batchExport.ts        aplica a mesma config a N estampas e gera o .zip
+  batchExport.ts        aplica a config de cada lado a N estampas, gera frente+verso numeradas no .zip
   imageProcessing.ts    knockout de preto (luminância) da estampa
   image.ts              helpers de imagem/arquivo compartilhados
+  shopifyCsv.ts         gera o CSV de importação de produtos do Shopify
 types/
   mockup.ts             tipos (GarmentConfig, DesignTransform, ...)
 public/garments/
