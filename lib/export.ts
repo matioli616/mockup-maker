@@ -97,12 +97,26 @@ export async function composeMockup(opts: ComposeOptions): Promise<HTMLCanvasEle
   const cx = imgX + imgW / 2
   const cy = imgY + imgH / 2
 
+  // Contain-fit dentro da caixa (imgW × imgH), igual ao object-fit: contain
+  // usado no preview — sem isso, resize não-uniforme no editor faz a estampa
+  // aparecer inteira e proporcional no preview mas esticada/distorcida no
+  // export, porque drawImage(img, x, y, w, h) preenche a caixa inteira.
+  const naturalW = designImg.naturalWidth || designImg.width
+  const naturalH = designImg.naturalHeight || designImg.height
+  let drawW = imgW
+  let drawH = imgH
+  if (naturalW && naturalH) {
+    const fit = Math.min(imgW / naturalW, imgH / naturalH)
+    drawW = naturalW * fit
+    drawH = naturalH * fit
+  }
+
   ctx.save()
   ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation
   ctx.globalAlpha = opacity
   ctx.translate(cx, cy)
   ctx.rotate((rotation * Math.PI) / 180)
-  ctx.drawImage(designImg, -imgW / 2, -imgH / 2, imgW, imgH)
+  ctx.drawImage(designImg, -drawW / 2, -drawH / 2, drawW, drawH)
   ctx.restore()
 
   // 3. Realismo: reaplica a peça em multiply sutil pra trazer dobras/textura
