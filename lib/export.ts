@@ -1,3 +1,4 @@
+import { loadImg } from '@/lib/image'
 import type { BlendModeOption, GarmentView } from '@/types/mockup'
 
 export type ExportFormat = 'original' | 'feed' | 'story'
@@ -14,7 +15,7 @@ const FRAME_SIZES: Record<ExportFormat, FrameSize | null> = {
   story: { w: 1080, h: 1920 },
 }
 
-interface ExportOptions {
+export interface ComposeOptions {
   garmentView: GarmentView
   designSrc: string
   // Design position/size in display coordinates
@@ -31,15 +32,7 @@ interface ExportOptions {
   realism: boolean
 }
 
-function loadImg(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => resolve(img)
-    img.onerror = reject
-    img.src = src
-  })
-}
+type ExportOptions = ComposeOptions
 
 // Cor de fundo pros formatos de post — amostra um pixel do canto da peça
 // pra emendar sem costura visível com o fundo já presente na foto.
@@ -54,19 +47,21 @@ function sampleCorner(canvas: HTMLCanvasElement): string {
   }
 }
 
-function downloadCanvas(canvas: HTMLCanvasElement, format: ExportFormat): void {
+function downloadCanvas(canvas: HTMLCanvasElement, filename: string): void {
   canvas.toBlob((blob) => {
     if (!blob) return
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `mockup-${format}-${Date.now()}.png`
+    a.download = filename
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)
   }, 'image/png')
 }
 
-export async function exportMockup(opts: ExportOptions): Promise<void> {
+// Compõe peça + estampa (+ realismo) + formato de saída, e devolve o canvas
+// pronto — sem baixar. Usado tanto pelo export único quanto pelo lote.
+export async function composeMockup(opts: ComposeOptions): Promise<HTMLCanvasElement> {
   const {
     garmentView,
     designSrc,
@@ -122,10 +117,7 @@ export async function exportMockup(opts: ExportOptions): Promise<void> {
 
   // ─── Formato de saída ────────────────────────────────────────────────────
   const frame = FRAME_SIZES[format]
-  if (!frame) {
-    downloadCanvas(base, format)
-    return
-  }
+  if (!frame) return base
 
   const out = document.createElement('canvas')
   out.width = frame.w
@@ -144,5 +136,10 @@ export async function exportMockup(opts: ExportOptions): Promise<void> {
   const dh = base.height * s
   fx.drawImage(base, (frame.w - dw) / 2, (frame.h - dh) / 2, dw, dh)
 
-  downloadCanvas(out, format)
+  return out
+}
+
+export async function exportMockup(opts: ExportOptions): Promise<void> {
+  const canvas = await composeMockup(opts)
+  downloadCanvas(canvas, `mockup-${opts.format}-${Date.now()}.png`)
 }

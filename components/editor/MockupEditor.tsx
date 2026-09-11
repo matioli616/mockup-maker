@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Rnd } from 'react-rnd'
+import { exportBatch } from '@/lib/batchExport'
 import { exportMockup, type ExportFormat } from '@/lib/export'
+import { applyBlackKnockout, DEFAULT_KNOCKOUT, type KnockoutOptions } from '@/lib/imageProcessing'
 import type { BlendModeOption, DesignTransform, GarmentConfig, ViewSide } from '@/types/mockup'
 
 // ─── Garment config (inline para MVP) ────────────────────────────────────────
@@ -53,6 +55,7 @@ interface PersistedState {
   v: 1
   view: ViewSide
   realism: boolean
+  knockout: KnockoutOptions
   designSrc: string | null
   transform: PersistedTransform | null
 }
@@ -102,6 +105,8 @@ export default function MockupEditor() {
   const [transform, setTransform] = useState<DesignTransform | null>(null)
   const [showGuide, setShowGuide] = useState(true)
   const [realism, setRealism] = useState(false)
+  const [knockout, setKnockout] = useState<KnockoutOptions>(DEFAULT_KNOCKOUT)
+  const [processedDesignSrc, setProcessedDesignSrc] = useState<string | null>(null)
   const [selected, setSelected] = useState(true)
   const [exporting, setExporting] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -109,8 +114,14 @@ export default function MockupEditor() {
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const [scale, setScale] = useState(1)
 
+  // ─── Lote: N estampas, mesma posição/config da primeira ────────────────────
+  const [batchFiles, setBatchFiles] = useState<File[]>([])
+  const [batchExporting, setBatchExporting] = useState(false)
+  const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null)
+
   const mainRef = useRef<HTMLElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const batchInputRef = useRef<HTMLInputElement>(null)
   const exportWrapRef = useRef<HTMLDivElement>(null)
   // transform restaurado do localStorage (coords de imagem), aplicado quando o scale existir
   const restoredRef = useRef<PersistedTransform | null>(null)
@@ -125,6 +136,14 @@ export default function MockupEditor() {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- hidrata estado de fonte externa (localStorage), roda uma única vez no mount
           if (p.view === 'front' || p.view === 'back') setView(p.view)
           if (typeof p.realism === 'boolean') setRealism(p.realism)
+          if (p.knockout && typeof p.knockout === 'object') {
+            const k = p.knockout as Partial<KnockoutOptions>
+            setKnockout({
+              enabled: !!k.enabled,
+              threshold: typeof k.threshold === 'number' ? k.threshold : DEFAULT_KNOCKOUT.threshold,
+              feather: typeof k.feather === 'number' ? k.feather : DEFAULT_KNOCKOUT.feather,
+            })
+          }
           if (typeof p.designSrc === 'string') setDesignSrc(p.designSrc)
           if (p.transform && typeof p.transform === 'object') {
             restoredRef.current = p.transform as PersistedTransform
@@ -204,6 +223,7 @@ export default function MockupEditor() {
         v: 1,
         view,
         realism,
+        knockout,
         designSrc,
         transform: transform
           ? {
@@ -221,7 +241,27 @@ export default function MockupEditor() {
     } catch {
       /* quota / indisponível — ignora */
     }
-  }, [hydrated, scale, view, realism, designSrc, transform])
+  }, [hydrated, scale, view, realism, knockout, designSrc, transform])
+
+  // ─── Recalcula a estampa com knockout de preto (preview + export) ─────────
+  useEffect(() => {
+    let cancelled = false
+    if (!designSrc) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- deriva a estampa "efetiva" (processada) de designSrc/knockout
+      setProcessedDesignSrc(null)
+      return
+    }
+    if (!knockout.enabled) {
+      setProcessedDesignSrc(designSrc)
+      return
+    }
+    applyBlackKnockout(designSrc, knockout).then((out) => {
+      if (!cancelled) setProcessedDesignSrc(out)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [designSrc, knockout])
 
   // ─── Reposiciona a estampa na print area ao trocar de view ────────────────
   useEffect(() => {
@@ -372,7 +412,7 @@ export default function MockupEditor() {
       try {
         await exportMockup({
           garmentView: GARMENT[view],
-          designSrc,
+          designSrc: processedDesignSrc ?? designSrc,
           displayX: transform.x,
           displayY: transform.y,
           displayW: transform.width,
@@ -389,7 +429,53 @@ export default function MockupEditor() {
         setExporting(false)
       }
     },
-    [designSrc, transform, containerSize.w, containerSize.h, view, realism],
+    [designSrc, processedDesignSrc, transform, containerSize.w, containerSize.h, view, realism],
+  )
+
+  // ─── Lote: seleciona N imagens, carrega a 1ª pro posicionamento normal ────
+  const handleBatchFilesSelected = useCallback(
+    (files: FileList | File[]) => {
+      const arr = Array.from(files).filter((f) => f.type.startsWith('image/'))
+      if (!arr.length) return
+      setBatchFiles(arr)
+      handleFileUpload(arr[0])
+    },
+    [handleFileUpload],
+  )
+
+  const clearBatch = useCallback(() => setBatchFiles([]), [])
+
+  const runBatchExport = useCallback(
+    async (format: ExportFormat) => {
+      if (!batchFiles.length || !transform || !containerSize.w) return
+      setBatchExporting(true)
+      setBatchProgress({ done: 0, total: batchFiles.length })
+      try {
+        await exportBatch(
+          batchFiles.map((file) => ({ file, name: file.name })),
+          {
+            garmentView: GARMENT[view],
+            displayX: transform.x,
+            displayY: transform.y,
+            displayW: transform.width,
+            displayH: transform.height,
+            displayContainerW: containerSize.w,
+            displayContainerH: containerSize.h,
+            rotation: transform.rotation,
+            opacity: transform.opacity,
+            blendMode: transform.blendMode,
+            format,
+            realism,
+            knockout,
+            onProgress: (done, total) => setBatchProgress({ done, total }),
+          },
+        )
+      } finally {
+        setBatchExporting(false)
+        setBatchProgress(null)
+      }
+    },
+    [batchFiles, transform, containerSize.w, containerSize.h, view, realism, knockout],
   )
 
   const garmentView = GARMENT[view]
@@ -598,6 +684,128 @@ export default function MockupEditor() {
             />
           </div>
 
+          {/* Lote */}
+          <div>
+            <p
+              style={{
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                letterSpacing: '0.1em',
+                color: 'var(--text-muted)',
+                margin: '0 0 10px 0',
+              }}
+            >
+              LOTE (VÁRIAS ESTAMPAS)
+            </p>
+            <button
+              onClick={() => batchInputRef.current?.click()}
+              disabled={batchExporting}
+              style={{
+                width: '100%',
+                padding: '14px',
+                border: '1.5px dashed var(--border)',
+                borderRadius: '10px',
+                background: 'var(--surface2)',
+                color: 'var(--text)',
+                cursor: batchExporting ? 'not-allowed' : 'pointer',
+                fontSize: '0.85rem',
+                fontWeight: 600,
+              }}
+            >
+              {batchFiles.length ? `🔄 Trocar lote (${batchFiles.length})` : '🗂 Selecionar várias imagens'}
+            </button>
+            <input
+              ref={batchInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const files = e.target.files
+                if (files && files.length) handleBatchFilesSelected(files)
+                e.target.value = ''
+              }}
+            />
+
+            {batchFiles.length > 0 && (
+              <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                  {batchFiles.length} estampas carregadas — a 1ª já está no canvas. Ajuste a posição
+                  acima e gere o lote (mesma posição pra todas).
+                </p>
+
+                {batchExporting ? (
+                  <div>
+                    <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text)', margin: '0 0 6px 0' }}>
+                      Gerando {batchProgress?.done ?? 0}/{batchProgress?.total ?? batchFiles.length}...
+                    </p>
+                    <div
+                      style={{
+                        height: '6px',
+                        background: 'var(--border)',
+                        borderRadius: '3px',
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: '100%',
+                          width: `${Math.round(
+                            ((batchProgress?.done ?? 0) / (batchProgress?.total || batchFiles.length)) * 100,
+                          )}%`,
+                          background: 'var(--accent)',
+                          transition: 'width 150ms linear',
+                        }}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {EXPORT_FORMATS.map((f) => (
+                      <button
+                        key={f.value}
+                        onClick={() => runBatchExport(f.value)}
+                        disabled={!transform}
+                        style={{
+                          width: '100%',
+                          padding: '9px 12px',
+                          background: transform ? 'var(--surface2)' : 'transparent',
+                          color: transform ? 'var(--text)' : 'var(--text-muted)',
+                          border: '1px solid var(--border)',
+                          borderRadius: '8px',
+                          cursor: transform ? 'pointer' : 'not-allowed',
+                          fontSize: '0.75rem',
+                          fontWeight: 700,
+                          textAlign: 'left',
+                        }}
+                      >
+                        🗂 Gerar lote (.zip) — {f.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <button
+                  onClick={clearBatch}
+                  disabled={batchExporting}
+                  style={{
+                    width: '100%',
+                    padding: '8px',
+                    background: 'transparent',
+                    color: 'var(--text-muted)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '8px',
+                    cursor: batchExporting ? 'not-allowed' : 'pointer',
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                  }}
+                >
+                  Limpar lote
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Controls (only when design is loaded) */}
           {transform && (
             <>
@@ -761,6 +969,49 @@ export default function MockupEditor() {
                 />
                 Realismo (dobras do tecido no export)
               </label>
+
+              <div style={{ height: '1px', background: 'var(--border)' }} />
+
+              {/* Knockout de preto */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '10px',
+                    cursor: 'pointer',
+                    fontSize: '0.8rem',
+                    color: 'var(--text-muted)',
+                    fontWeight: 600,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={knockout.enabled}
+                    onChange={(e) => setKnockout((k) => ({ ...k, enabled: e.target.checked }))}
+                    style={{ accentColor: 'var(--accent)', width: '14px', height: '14px' }}
+                  />
+                  Remover preto (usa o preto da blusa)
+                </label>
+                {knockout.enabled && (
+                  <>
+                    <Slider
+                      label="Sensibilidade"
+                      value={knockout.threshold}
+                      min={0}
+                      max={150}
+                      onChange={(v) => setKnockout((k) => ({ ...k, threshold: v }))}
+                    />
+                    <Slider
+                      label="Suavidade"
+                      value={knockout.feather}
+                      min={5}
+                      max={150}
+                      onChange={(v) => setKnockout((k) => ({ ...k, feather: v }))}
+                    />
+                  </>
+                )}
+              </div>
 
               {/* Guide Toggle */}
               <label
@@ -933,7 +1184,7 @@ export default function MockupEditor() {
                   >
                     {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
-                      src={designSrc}
+                      src={processedDesignSrc ?? designSrc}
                       alt="Estampa"
                       style={{
                         width: '100%',

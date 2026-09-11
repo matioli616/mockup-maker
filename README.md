@@ -16,13 +16,27 @@ estampa nunca sai da sua máquina.
 4. Ajuste **rotação**, **opacidade** e **blend mode** na sidebar.
 5. Ligue **Realismo** pra aplicar a textura/dobras do tecido por cima da estampa
    no export (efeito de estampa DTG).
-6. Clique em **Exportar** e escolha o formato:
+6. Ligue **Remover preto** se a estampa tem fundo preto chapado — os pixels
+   escuros viram transparentes e o preto real do tecido aparece por baixo, sem
+   o efeito "adesivo colado". Ajuste **Sensibilidade** (quão claro ainda conta
+   como "preto") e **Suavidade** (transição da borda).
+7. Clique em **Exportar** e escolha o formato:
    - **PNG Original** — 720×1280
    - **Feed Instagram** — 1080×1350 (4:5)
    - **Story Instagram** — 1080×1920 (9:16)
 
-O estado (estampa, posição, tamanho, rotação, opacidade, blend, view, realismo) é
-salvo automaticamente no `localStorage` e restaurado ao reabrir o editor.
+O estado (estampa, posição, tamanho, rotação, opacidade, blend, view, realismo,
+remover preto) é salvo automaticamente no `localStorage` e restaurado ao reabrir
+o editor.
+
+### Lote (várias estampas de uma vez)
+
+Na sidebar, em **Lote**, selecione várias imagens do mesmo tamanho (ex.: 50
+PNGs). A primeira carrega no canvas normalmente — posicione, redimensione,
+rotacione, ajuste opacidade/blend/realismo/remover-preto como de costume.
+Depois clique em **Gerar lote (.zip)** no formato desejado: o app aplica essa
+mesma configuração a cada uma das outras estampas e baixa um único `.zip` com
+todos os mockups (`001-nome.png`, `002-nome.png`, ...).
 
 ### Atalhos de teclado (no editor)
 
@@ -43,6 +57,7 @@ salvo automaticamente no `localStorage` e restaurado ao reabrir o editor.
 - **Tailwind CSS v4**
 - **react-rnd** — drag & resize da estampa
 - Composição e export via **Canvas 2D** (`lib/export.ts`)
+- **JSZip** — empacota o lote de mockups num único `.zip`
 
 ## Rodar localmente
 
@@ -69,6 +84,9 @@ components/editor/
   MockupEditor.tsx      editor completo (client component)
 lib/
   export.ts             composição garment + estampa + realismo, export PNG
+  batchExport.ts        aplica a mesma config a N estampas e gera o .zip
+  imageProcessing.ts    knockout de preto (luminância) da estampa
+  image.ts              helpers de imagem/arquivo compartilhados
 types/
   mockup.ts             tipos (GarmentConfig, DesignTransform, ...)
 public/garments/
