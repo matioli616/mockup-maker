@@ -1,36 +1,80 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MockupDrop
 
-## Getting Started
+Editor de mockups de camiseta streetwear que roda 100% no browser. Faz upload da
+estampa, posiciona sobre uma blusa oversized (frente ou verso), ajusta tamanho,
+rotação, opacidade e blend mode, e exporta em alta resolução — pronto pra post.
 
-First, run the development server:
+Ferramenta de uso pessoal. Sem backend, sem conta, sem upload pra servidor: a
+estampa nunca sai da sua máquina.
+
+## Como usar
+
+1. Abra `/editor`.
+2. Clique em **Upload PNG / SVG** (ou arraste a imagem pro canvas).
+3. Arraste a estampa pra posicionar e use as alças pra redimensionar. A área
+   tracejada é a zona de impressão sugerida.
+4. Ajuste **rotação**, **opacidade** e **blend mode** na sidebar.
+5. Ligue **Realismo** pra aplicar a textura/dobras do tecido por cima da estampa
+   no export (efeito de estampa DTG).
+6. Clique em **Exportar** e escolha o formato:
+   - **PNG Original** — 720×1280
+   - **Feed Instagram** — 1080×1350 (4:5)
+   - **Story Instagram** — 1080×1920 (9:16)
+
+O estado (estampa, posição, tamanho, rotação, opacidade, blend, view, realismo) é
+salvo automaticamente no `localStorage` e restaurado ao reabrir o editor.
+
+### Atalhos de teclado (no editor)
+
+| Tecla | Ação |
+|---|---|
+| ↑ ↓ ← → | Move a estampa 1px |
+| Shift + ↑ ↓ ← → | Move a estampa 10px |
+| `R` | Reseta a posição pra área de impressão |
+| `F` | Alterna frente / verso |
+| `Delete` / `Backspace` | Remove a estampa do canvas |
+| `Esc` | Desseleciona a estampa |
+
+## Stack
+
+- **Next.js 16** (App Router, Turbopack)
+- **React 19**
+- **TypeScript**
+- **Tailwind CSS v4**
+- **react-rnd** — drag & resize da estampa
+- Composição e export via **Canvas 2D** (`lib/export.ts`)
+
+## Rodar localmente
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Outros comandos:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm run build    # build de produção
+npm run start    # sobe o build
+npm run lint     # eslint
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Estrutura
 
-## Learn More
+```
+app/
+  page.tsx              landing
+  editor/page.tsx       rota do editor
+components/editor/
+  MockupEditor.tsx      editor completo (client component)
+lib/
+  export.ts             composição garment + estampa + realismo, export PNG
+types/
+  mockup.ts             tipos (GarmentConfig, DesignTransform, ...)
+public/garments/
+  tshirt-front.jpg      blusa oversized preta — frente
+  tshirt-back.jpg       blusa oversized preta — verso
+```
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+A config da peça (dimensões da imagem e área de impressão de frente/verso) vive
+inline em `components/editor/MockupEditor.tsx` (`GARMENT`).

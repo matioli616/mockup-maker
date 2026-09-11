@@ -1,5 +1,19 @@
 import type { BlendModeOption, GarmentView } from '@/types/mockup'
 
+export type ExportFormat = 'original' | 'feed' | 'story'
+
+interface FrameSize {
+  w: number
+  h: number
+}
+
+// null = exporta a imagem da peça no tamanho original
+const FRAME_SIZES: Record<ExportFormat, FrameSize | null> = {
+  original: null,
+  feed: { w: 1080, h: 1350 },
+  story: { w: 1080, h: 1920 },
+}
+
 interface ExportOptions {
   garmentView: GarmentView
   designSrc: string
@@ -13,6 +27,8 @@ interface ExportOptions {
   rotation: number
   opacity: number
   blendMode: BlendModeOption
+  format: ExportFormat
+  realism: boolean
 }
 
 function loadImg(src: string): Promise<HTMLImageElement> {
@@ -25,6 +41,31 @@ function loadImg(src: string): Promise<HTMLImageElement> {
   })
 }
 
+// Cor de fundo pros formatos de post — amostra um pixel do canto da peça
+// pra emendar sem costura visível com o fundo já presente na foto.
+function sampleCorner(canvas: HTMLCanvasElement): string {
+  try {
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return '#ededed'
+    const d = ctx.getImageData(2, 2, 1, 1).data
+    return `rgb(${d[0]}, ${d[1]}, ${d[2]})`
+  } catch {
+    return '#ededed'
+  }
+}
+
+function downloadCanvas(canvas: HTMLCanvasElement, format: ExportFormat): void {
+  canvas.toBlob((blob) => {
+    if (!blob) return
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `mockup-${format}-${Date.now()}.png`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }, 'image/png')
+}
+
 export async function exportMockup(opts: ExportOptions): Promise<void> {
   const {
     garmentView,
@@ -32,6 +73,7 @@ export async function exportMockup(opts: ExportOptions): Promise<void> {
     displayX, displayY, displayW, displayH,
     displayContainerW, displayContainerH,
     rotation, opacity, blendMode,
+    format, realism,
   } = opts
 
   const { imageWidth, imageHeight } = garmentView
@@ -40,19 +82,19 @@ export async function exportMockup(opts: ExportOptions): Promise<void> {
   const scaleX = imageWidth / displayContainerW
   const scaleY = imageHeight / displayContainerH
 
-  const canvas = document.createElement('canvas')
-  canvas.width = imageWidth
-  canvas.height = imageHeight
-  const ctx = canvas.getContext('2d')!
+  // ─── Canvas base: peça + estampa na resolução original ───────────────────
+  const base = document.createElement('canvas')
+  base.width = imageWidth
+  base.height = imageHeight
+  const ctx = base.getContext('2d')!
 
-  // 1. Draw shirt background
+  // 1. Fundo: a peça
   const shirtImg = await loadImg(garmentView.image)
   ctx.drawImage(shirtImg, 0, 0, imageWidth, imageHeight)
 
-  // 2. Draw design with transform
+  // 2. Estampa com transform
   const designImg = await loadImg(designSrc)
 
-  // Convert display coords to image coords
   const imgX = displayX * scaleX
   const imgY = displayY * scaleY
   const imgW = displayW * scaleX
@@ -68,14 +110,39 @@ export async function exportMockup(opts: ExportOptions): Promise<void> {
   ctx.drawImage(designImg, -imgW / 2, -imgH / 2, imgW, imgH)
   ctx.restore()
 
-  // 3. Download
-  canvas.toBlob((blob) => {
-    if (!blob) return
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `mockup-${Date.now()}.png`
-    a.click()
-    setTimeout(() => URL.revokeObjectURL(url), 1000)
-  }, 'image/png')
+  // 3. Realismo: reaplica a peça em multiply sutil pra trazer dobras/textura
+  //    do tecido por cima da estampa (efeito de estampa DTG).
+  if (realism) {
+    ctx.save()
+    ctx.globalCompositeOperation = 'multiply'
+    ctx.globalAlpha = 0.18
+    ctx.drawImage(shirtImg, 0, 0, imageWidth, imageHeight)
+    ctx.restore()
+  }
+
+  // ─── Formato de saída ────────────────────────────────────────────────────
+  const frame = FRAME_SIZES[format]
+  if (!frame) {
+    downloadCanvas(base, format)
+    return
+  }
+
+  const out = document.createElement('canvas')
+  out.width = frame.w
+  out.height = frame.h
+  const fx = out.getContext('2d')!
+
+  fx.fillStyle = sampleCorner(base)
+  fx.fillRect(0, 0, frame.w, frame.h)
+
+  // Centraliza a peça com um respiro (padding) dentro do frame
+  const pad = Math.round(frame.w * 0.06)
+  const availW = frame.w - pad * 2
+  const availH = frame.h - pad * 2
+  const s = Math.min(availW / base.width, availH / base.height)
+  const dw = base.width * s
+  const dh = base.height * s
+  fx.drawImage(base, (frame.w - dw) / 2, (frame.h - dh) / 2, dw, dh)
+
+  downloadCanvas(out, format)
 }
