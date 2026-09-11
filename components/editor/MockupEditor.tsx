@@ -15,13 +15,17 @@ const GARMENT: GarmentConfig = {
     image: '/garments/tshirt-front.jpg',
     imageWidth: 720,
     imageHeight: 1280,
-    printArea: { x: 185, y: 300, width: 350, height: 550 },
+    printArea: { x: 185, y: 400, width: 350, height: 550 },
   },
   back: {
+    // Foto original vinha "menor" no frame que a da frente (mesma peça, mais
+    // afastada da câmera) — reenquadrada (upscale + crop central 124%) pra
+    // bater na mesma escala/posição da frente. Por isso a printArea é
+    // idêntica à da frente agora.
     image: '/garments/tshirt-back.jpg',
     imageWidth: 720,
     imageHeight: 1280,
-    printArea: { x: 175, y: 280, width: 370, height: 590 },
+    printArea: { x: 185, y: 400, width: 350, height: 550 },
   },
 }
 
