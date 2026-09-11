@@ -109,7 +109,7 @@ export default function MockupEditor() {
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const [scale, setScale] = useState(1)
 
-  const containerRef = useRef<HTMLDivElement>(null)
+  const mainRef = useRef<HTMLElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const exportWrapRef = useRef<HTMLDivElement>(null)
   // transform restaurado do localStorage (coords de imagem), aplicado quando o scale existir
@@ -138,10 +138,11 @@ export default function MockupEditor() {
   }, [])
 
   // ─── Mede o container (mantém aspect ratio 720:1280 = 9:16) ────────────────
+  // Mede a partir do <main> (sempre montado) — a peça em si só é renderizada
+  // depois que containerSize existe, então não dá pra medir a partir dela.
   useEffect(() => {
     function measure() {
-      if (!containerRef.current) return
-      const parent = containerRef.current.parentElement
+      const parent = mainRef.current
       if (!parent) return
       const maxW = Math.min(parent.clientWidth, 480)
       const maxH = window.innerHeight - 160
@@ -822,6 +823,7 @@ export default function MockupEditor() {
 
         {/* ── Canvas Area ── */}
         <main
+          ref={mainRef}
           style={{
             flex: 1,
             display: 'flex',
@@ -836,7 +838,6 @@ export default function MockupEditor() {
         >
           {containerSize.w > 0 && (
             <div
-              ref={containerRef}
               onMouseDown={(e) => {
                 if (e.target === e.currentTarget) setSelected(false)
               }}
