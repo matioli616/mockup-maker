@@ -51,13 +51,33 @@ interface PersistedTransform {
   opacity: number
   blendMode: BlendModeOption
 }
+// Um transform por lado — frente e verso guardam posição/tamanho/rotação
+// independentes (antes era um único transform, sobrescrito toda vez que
+// trocava de lado).
+interface PersistedTransforms {
+  front: PersistedTransform | null
+  back: PersistedTransform | null
+}
 interface PersistedState {
-  v: 1
+  v: 2
   view: ViewSide
   realism: boolean
   knockout: KnockoutOptions
   designSrc: string | null
-  transform: PersistedTransform | null
+  transforms: PersistedTransforms
+}
+
+function defaultTransformFor(view: ViewSide, s: number): DesignTransform {
+  const pa = GARMENT[view].printArea
+  return {
+    x: pa.x * s,
+    y: pa.y * s,
+    width: pa.width * s,
+    height: pa.height * s,
+    rotation: 0,
+    opacity: 1,
+    blendMode: 'source-over',
+  }
 }
 
 // ─── Slider component ─────────────────────────────────────────────────────────
@@ -102,7 +122,13 @@ function Slider({
 export default function MockupEditor() {
   const [view, setView] = useState<ViewSide>('front')
   const [designSrc, setDesignSrc] = useState<string | null>(null)
-  const [transform, setTransform] = useState<DesignTransform | null>(null)
+  // Transform por lado (frente/verso) — trocar de view não mexe na posição
+  // do outro lado.
+  const [transforms, setTransforms] = useState<Record<ViewSide, DesignTransform | null>>({
+    front: null,
+    back: null,
+  })
+  const transform = transforms[view]
   const [showGuide, setShowGuide] = useState(true)
   const [realism, setRealism] = useState(false)
   const [knockout, setKnockout] = useState<KnockoutOptions>(DEFAULT_KNOCKOUT)
@@ -133,15 +159,17 @@ export default function MockupEditor() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const batchInputRef = useRef<HTMLInputElement>(null)
   const exportWrapRef = useRef<HTMLDivElement>(null)
-  // transform restaurado do localStorage (coords de imagem), aplicado quando o scale existir
-  const restoredRef = useRef<PersistedTransform | null>(null)
+  // transforms restaurados do localStorage (coords de imagem), aplicados quando o scale existir
+  const restoredRef = useRef<PersistedTransforms | null>(null)
 
   // ─── Hidratação: restaura o último estado ──────────────────────────────────
   useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw) {
-        const p = JSON.parse(raw) as Partial<PersistedState>
+        // formato antigo (v1) guardava um único `transform`; o novo (v2) guarda
+        // `transforms.{front,back}` — aceita os dois pra não perder estado salvo.
+        const p = JSON.parse(raw) as Partial<PersistedState> & { transform?: PersistedTransform | null }
         if (p && typeof p === 'object') {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- hidrata estado de fonte externa (localStorage), roda uma única vez no mount
           if (p.view === 'front' || p.view === 'back') setView(p.view)
@@ -155,8 +183,13 @@ export default function MockupEditor() {
             })
           }
           if (typeof p.designSrc === 'string') setDesignSrc(p.designSrc)
-          if (p.transform && typeof p.transform === 'object') {
-            restoredRef.current = p.transform as PersistedTransform
+          if (p.transforms && typeof p.transforms === 'object') {
+            const t = p.transforms as Partial<PersistedTransforms>
+            restoredRef.current = { front: t.front ?? null, back: t.back ?? null }
+          } else if (p.transform && typeof p.transform === 'object') {
+            // migração v1 → v2: o único transform salvo pertencia ao lado ativo
+            restoredRef.current =
+              p.view === 'back' ? { front: null, back: p.transform } : { front: p.transform, back: null }
           }
         }
       }
@@ -189,37 +222,34 @@ export default function MockupEditor() {
     return () => window.removeEventListener('resize', measure)
   }, [])
 
-  // ─── Aplica o transform restaurado assim que o scale estiver disponível ────
+  // ─── Aplica os transforms restaurados assim que o scale estiver disponível ─
   useEffect(() => {
     if (!hydrated || !scale) return
-    const n = restoredRef.current
-    if (n) {
+    const toTransform = (n: PersistedTransform | null): DesignTransform | null =>
+      n
+        ? {
+            x: n.x * scale,
+            y: n.y * scale,
+            width: n.width * scale,
+            height: n.height * scale,
+            rotation: typeof n.rotation === 'number' ? n.rotation : 0,
+            opacity: typeof n.opacity === 'number' ? n.opacity : 1,
+            blendMode: n.blendMode ?? 'source-over',
+          }
+        : null
+    const restored = restoredRef.current
+    if (restored) {
       restoredRef.current = null
-      setTransform({
-        x: n.x * scale,
-        y: n.y * scale,
-        width: n.width * scale,
-        height: n.height * scale,
-        rotation: typeof n.rotation === 'number' ? n.rotation : 0,
-        opacity: typeof n.opacity === 'number' ? n.opacity : 1,
-        blendMode: n.blendMode ?? 'source-over',
-      })
+      setTransforms({ front: toTransform(restored.front), back: toTransform(restored.back) })
       setSelected(true)
       return
     }
-    // designSrc restaurado sem transform (situação anômala) — cai no default
-    setTransform((t) => {
-      if (t) return t
+    // designSrc restaurado sem nenhum transform (situação anômala) — cai no default pros dois lados
+    setTransforms((t) => {
       if (!designSrc) return t
-      const pa = GARMENT[view].printArea
       return {
-        x: pa.x * scale,
-        y: pa.y * scale,
-        width: pa.width * scale,
-        height: pa.height * scale,
-        rotation: 0,
-        opacity: 1,
-        blendMode: 'source-over',
+        front: t.front ?? defaultTransformFor('front', scale),
+        back: t.back ?? defaultTransformFor('back', scale),
       }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -229,23 +259,25 @@ export default function MockupEditor() {
   useEffect(() => {
     if (!hydrated || !scale) return
     try {
+      const toPersisted = (t: DesignTransform | null): PersistedTransform | null =>
+        t
+          ? {
+              x: t.x / scale,
+              y: t.y / scale,
+              width: t.width / scale,
+              height: t.height / scale,
+              rotation: t.rotation,
+              opacity: t.opacity,
+              blendMode: t.blendMode,
+            }
+          : null
       const payload: PersistedState = {
-        v: 1,
+        v: 2,
         view,
         realism,
         knockout,
         designSrc,
-        transform: transform
-          ? {
-              x: transform.x / scale,
-              y: transform.y / scale,
-              width: transform.width / scale,
-              height: transform.height / scale,
-              rotation: transform.rotation,
-              opacity: transform.opacity,
-              blendMode: transform.blendMode,
-            }
-          : null,
+        transforms: { front: toPersisted(transforms.front), back: toPersisted(transforms.back) },
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
     } catch (err) {
@@ -256,7 +288,7 @@ export default function MockupEditor() {
         showError('Não foi possível salvar automaticamente (armazenamento local cheio ou indisponível).')
       }
     }
-  }, [hydrated, scale, view, realism, knockout, designSrc, transform, showError])
+  }, [hydrated, scale, view, realism, knockout, designSrc, transforms, showError])
 
   // ─── Recalcula a estampa com knockout de preto (preview + export) ─────────
   useEffect(() => {
@@ -285,41 +317,16 @@ export default function MockupEditor() {
     }
   }, [designSrc, knockout, showError])
 
-  // ─── Reposiciona a estampa na print area ao trocar de view ────────────────
-  useEffect(() => {
-    if (!transform || !scale) return
-    const pa = GARMENT[view].printArea
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- reposiciona ao trocar de view, dependente de `view` em si
-    setTransform((t) =>
-      t
-        ? {
-            ...t,
-            x: pa.x * scale,
-            y: pa.y * scale,
-            width: pa.width * scale,
-            height: pa.height * scale,
-          }
-        : t,
-    )
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view])
-
-  const updateTransform = useCallback((patch: Partial<DesignTransform>) => {
-    setTransform((t) => (t ? { ...t, ...patch } : t))
-  }, [])
+  const updateTransform = useCallback(
+    (patch: Partial<DesignTransform>) => {
+      setTransforms((t) => (t[view] ? { ...t, [view]: { ...t[view]!, ...patch } } : t))
+    },
+    [view],
+  )
 
   const resetPosition = useCallback(() => {
     if (!scale) return
-    const pa = GARMENT[view].printArea
-    setTransform({
-      x: pa.x * scale,
-      y: pa.y * scale,
-      width: pa.width * scale,
-      height: pa.height * scale,
-      rotation: 0,
-      opacity: 1,
-      blendMode: 'source-over',
-    })
+    setTransforms((t) => ({ ...t, [view]: defaultTransformFor(view, scale) }))
     setSelected(true)
   }, [view, scale])
 
@@ -329,17 +336,9 @@ export default function MockupEditor() {
       reader.onload = (e) => {
         const src = e.target?.result as string
         setDesignSrc(src)
-        const pa = GARMENT[view].printArea
+        // Estampa nova → posição default nos dois lados (frente e verso).
         const s = scale || 1
-        setTransform({
-          x: pa.x * s,
-          y: pa.y * s,
-          width: pa.width * s,
-          height: pa.height * s,
-          rotation: 0,
-          opacity: 1,
-          blendMode: 'source-over',
-        })
+        setTransforms({ front: defaultTransformFor('front', s), back: defaultTransformFor('back', s) })
         setSelected(true)
       }
       reader.onerror = () => {
@@ -347,7 +346,7 @@ export default function MockupEditor() {
       }
       reader.readAsDataURL(file)
     },
-    [view, scale, showError],
+    [scale, showError],
   )
 
   const handleDrop = useCallback(
@@ -366,7 +365,7 @@ export default function MockupEditor() {
 
   const removeDesign = useCallback(() => {
     setDesignSrc(null)
-    setTransform(null)
+    setTransforms({ front: null, back: null })
     setSelected(false)
   }, [])
 
@@ -388,7 +387,9 @@ export default function MockupEditor() {
           const step = e.shiftKey ? 10 : 1
           const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
           const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
-          setTransform((t) => (t ? { ...t, x: t.x + dx, y: t.y + dy } : t))
+          setTransforms((t) =>
+            t[view] ? { ...t, [view]: { ...t[view]!, x: t[view]!.x + dx, y: t[view]!.y + dy } } : t,
+          )
           break
         }
         case 'Delete':
@@ -422,7 +423,7 @@ export default function MockupEditor() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selected, designSrc, removeDesign, resetPosition])
+  }, [selected, designSrc, removeDesign, resetPosition, view])
 
   // ─── Fecha o menu de export ao clicar fora ────────────────────────────────
   useEffect(() => {
