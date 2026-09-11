@@ -114,6 +114,16 @@ export default function MockupEditor() {
   const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
   const [scale, setScale] = useState(1)
 
+  // ─── Erros (upload, processamento, export) — antes falhavam em silêncio ───
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const storageWarnedRef = useRef(false)
+  const showError = useCallback((msg: string) => {
+    setErrorMsg(msg)
+    if (errorTimerRef.current) clearTimeout(errorTimerRef.current)
+    errorTimerRef.current = setTimeout(() => setErrorMsg(null), 6000)
+  }, [])
+
   // ─── Lote: N estampas, mesma posição/config da primeira ────────────────────
   const [batchFiles, setBatchFiles] = useState<File[]>([])
   const [batchExporting, setBatchExporting] = useState(false)
@@ -238,10 +248,15 @@ export default function MockupEditor() {
           : null,
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
-    } catch {
-      /* quota / indisponível — ignora */
+    } catch (err) {
+      // quota estourada (estampa grande em base64) / localStorage indisponível
+      console.warn('[MockupDrop] falha ao salvar estado no localStorage:', err)
+      if (!storageWarnedRef.current) {
+        storageWarnedRef.current = true
+        showError('Não foi possível salvar automaticamente (armazenamento local cheio ou indisponível).')
+      }
     }
-  }, [hydrated, scale, view, realism, knockout, designSrc, transform])
+  }, [hydrated, scale, view, realism, knockout, designSrc, transform, showError])
 
   // ─── Recalcula a estampa com knockout de preto (preview + export) ─────────
   useEffect(() => {
@@ -255,13 +270,20 @@ export default function MockupEditor() {
       setProcessedDesignSrc(designSrc)
       return
     }
-    applyBlackKnockout(designSrc, knockout).then((out) => {
-      if (!cancelled) setProcessedDesignSrc(out)
-    })
+    applyBlackKnockout(designSrc, knockout)
+      .then((out) => {
+        if (!cancelled) setProcessedDesignSrc(out)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        console.error('[MockupDrop] falha ao aplicar knockout de preto:', err)
+        showError('Falha ao processar "remover preto" — usando a estampa original.')
+        setProcessedDesignSrc(designSrc)
+      })
     return () => {
       cancelled = true
     }
-  }, [designSrc, knockout])
+  }, [designSrc, knockout, showError])
 
   // ─── Reposiciona a estampa na print area ao trocar de view ────────────────
   useEffect(() => {
@@ -320,18 +342,26 @@ export default function MockupEditor() {
         })
         setSelected(true)
       }
+      reader.onerror = () => {
+        showError(`Não foi possível ler "${file.name}". Tente outra imagem.`)
+      }
       reader.readAsDataURL(file)
     },
-    [view, scale],
+    [view, scale, showError],
   )
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault()
       const file = e.dataTransfer.files[0]
-      if (file && file.type.startsWith('image/')) handleFileUpload(file)
+      if (!file) return
+      if (file.type.startsWith('image/')) {
+        handleFileUpload(file)
+      } else {
+        showError('Arquivo inválido — envie uma imagem (PNG, JPG ou SVG).')
+      }
     },
-    [handleFileUpload],
+    [handleFileUpload, showError],
   )
 
   const removeDesign = useCallback(() => {
@@ -425,22 +455,28 @@ export default function MockupEditor() {
           format,
           realism,
         })
+      } catch (err) {
+        console.error('[MockupDrop] falha ao exportar mockup:', err)
+        showError('Falha ao exportar o mockup. Tente novamente.')
       } finally {
         setExporting(false)
       }
     },
-    [designSrc, processedDesignSrc, transform, containerSize.w, containerSize.h, view, realism],
+    [designSrc, processedDesignSrc, transform, containerSize.w, containerSize.h, view, realism, showError],
   )
 
   // ─── Lote: seleciona N imagens, carrega a 1ª pro posicionamento normal ────
   const handleBatchFilesSelected = useCallback(
     (files: FileList | File[]) => {
       const arr = Array.from(files).filter((f) => f.type.startsWith('image/'))
-      if (!arr.length) return
+      if (!arr.length) {
+        showError('Nenhuma imagem válida selecionada.')
+        return
+      }
       setBatchFiles(arr)
       handleFileUpload(arr[0])
     },
-    [handleFileUpload],
+    [handleFileUpload, showError],
   )
 
   const clearBatch = useCallback(() => setBatchFiles([]), [])
@@ -451,7 +487,7 @@ export default function MockupEditor() {
       setBatchExporting(true)
       setBatchProgress({ done: 0, total: batchFiles.length })
       try {
-        await exportBatch(
+        const result = await exportBatch(
           batchFiles.map((file) => ({ file, name: file.name })),
           {
             garmentView: GARMENT[view],
@@ -470,12 +506,20 @@ export default function MockupEditor() {
             onProgress: (done, total) => setBatchProgress({ done, total }),
           },
         )
+        if (result.failed.length) {
+          showError(
+            `${result.failed.length} de ${batchFiles.length} estampa(s) falharam e ficaram de fora do .zip: ${result.failed.join(', ')}`,
+          )
+        }
+      } catch (err) {
+        console.error('[MockupDrop] falha ao gerar lote:', err)
+        showError('Falha ao gerar o lote. Tente novamente.')
       } finally {
         setBatchExporting(false)
         setBatchProgress(null)
       }
     },
-    [batchFiles, transform, containerSize.w, containerSize.h, view, realism, knockout],
+    [batchFiles, transform, containerSize.w, containerSize.h, view, realism, knockout, showError],
   )
 
   const garmentView = GARMENT[view]
@@ -495,6 +539,51 @@ export default function MockupEditor() {
         flexDirection: 'column',
       }}
     >
+      {/* ── Toast de erro ── */}
+      {errorMsg && (
+        <div
+          role="alert"
+          style={{
+            position: 'fixed',
+            top: '16px',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            zIndex: 100,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            maxWidth: '90vw',
+            background: '#2a0e0e',
+            border: '1px solid #7a2323',
+            color: '#ffb4b4',
+            padding: '10px 14px',
+            borderRadius: '8px',
+            fontSize: '0.8rem',
+            fontWeight: 600,
+            lineHeight: 1.4,
+            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
+          }}
+        >
+          <span>{errorMsg}</span>
+          <button
+            onClick={() => setErrorMsg(null)}
+            aria-label="Fechar aviso"
+            style={{
+              background: 'transparent',
+              border: 'none',
+              color: '#ffb4b4',
+              cursor: 'pointer',
+              fontWeight: 900,
+              fontSize: '0.9rem',
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* ── Top Bar ── */}
       <header
         style={{
