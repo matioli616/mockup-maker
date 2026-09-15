@@ -1,14 +1,19 @@
+/* Gótica pra logo (UnifrakturCook) + Inter pro resto da UI — precisa vir
+   ANTES do @import "tailwindcss": esse import expande pra várias regras CSS
+   normais, e depois delas um @import não é mais válido. */
+@import url('https://fonts.googleapis.com/css2?family=UnifrakturCook:wght@700&family=Inter:wght@400;600;700;800;900&display=swap');
 @import "tailwindcss";
 
+/* Tema SixOneSix Mafia — vermelho-sangue sobre preto */
 :root {
-  --bg: #0a0a0a;
-  --surface: #111111;
-  --surface2: #1a1a1a;
-  --border: #2a2a2a;
-  --text: #f5f5f5;
-  --text-muted: #888888;
-  --accent: #c8ff00;
-  --accent-dim: rgba(200,255,0,0.15);
+  --bg: #0a0505;
+  --surface: #140707;
+  --surface2: #1e0a0a;
+  --border: #3a1012;
+  --text: #f5ecec;
+  --text-muted: #9c7a7a;
+  --accent: #c40011;
+  --accent-dim: rgba(196,0,17,0.18);
 }
 
 * {
@@ -16,7 +21,10 @@
 }
 
 body {
-  background: var(--bg);
+  /* Vinheta bem sutil pra dar clima sem pesar no conteúdo */
+  background:
+    radial-gradient(ellipse 900px 500px at 50% -10%, rgba(196,0,17,0.14), transparent 60%),
+    var(--bg);
   color: var(--text);
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;

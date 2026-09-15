@@ -1,3 +1,4 @@
+import { centerWithPadding, containFit } from '@/lib/geometry'
 import { loadImg } from '@/lib/image'
 import { VIEW_LABEL, type BlendModeOption, type GarmentView, type ViewSide } from '@/types/mockup'
 
@@ -14,6 +15,14 @@ const FRAME_SIZES: Record<ExportFormat, FrameSize | null> = {
   feed: { w: 1080, h: 1350 },
   story: { w: 1080, h: 1920 },
 }
+
+// Opções do menu de export/lote (label + subtítulo) na sidebar do editor —
+// vive aqui, colada no ExportFormat que ela lista.
+export const EXPORT_FORMATS: { label: string; sub: string; value: ExportFormat }[] = [
+  { label: 'PNG Original', sub: '720 × 1280', value: 'original' },
+  { label: 'Feed Instagram', sub: '1080 × 1350 · 4:5', value: 'feed' },
+  { label: 'Story Instagram', sub: '1080 × 1920 · 9:16', value: 'story' },
+]
 
 export interface ComposeOptions {
   garmentView: GarmentView
@@ -104,13 +113,7 @@ export async function composeMockup(opts: ComposeOptions): Promise<HTMLCanvasEle
   // export, porque drawImage(img, x, y, w, h) preenche a caixa inteira.
   const naturalW = designImg.naturalWidth || designImg.width
   const naturalH = designImg.naturalHeight || designImg.height
-  let drawW = imgW
-  let drawH = imgH
-  if (naturalW && naturalH) {
-    const fit = Math.min(imgW / naturalW, imgH / naturalH)
-    drawW = naturalW * fit
-    drawH = naturalH * fit
-  }
+  const { width: drawW, height: drawH } = containFit(imgW, imgH, naturalW, naturalH)
 
   ctx.save()
   ctx.globalCompositeOperation = blendMode as GlobalCompositeOperation
@@ -143,13 +146,8 @@ export async function composeMockup(opts: ComposeOptions): Promise<HTMLCanvasEle
   fx.fillRect(0, 0, frame.w, frame.h)
 
   // Centraliza a peça com um respiro (padding) dentro do frame
-  const pad = Math.round(frame.w * 0.06)
-  const availW = frame.w - pad * 2
-  const availH = frame.h - pad * 2
-  const s = Math.min(availW / base.width, availH / base.height)
-  const dw = base.width * s
-  const dh = base.height * s
-  fx.drawImage(base, (frame.w - dw) / 2, (frame.h - dh) / 2, dw, dh)
+  const { x, y, width: dw, height: dh } = centerWithPadding(frame.w, frame.h, base.width, base.height, 0.06)
+  fx.drawImage(base, x, y, dw, dh)
 
   return out
 }

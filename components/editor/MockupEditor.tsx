@@ -1,190 +1,33 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
-import { Rnd } from 'react-rnd'
 import { exportBatch } from '@/lib/batchExport'
+import {
+  parseStoredState,
+  serializeState,
+  STORAGE_KEY,
+  toDisplayTransform,
+  type PersistedTransforms,
+} from '@/lib/editorPersistence'
 import { exportMockup, type ExportFormat } from '@/lib/export'
+import { defaultTransformFor, GARMENT } from '@/lib/garments'
 import { applyBlackKnockout, DEFAULT_KNOCKOUT, type KnockoutOptions } from '@/lib/imageProcessing'
 import { getDesign, setDesign } from '@/lib/imageStore'
 import { buildShopifyCsv, downloadCsv } from '@/lib/shopifyCsv'
-import type { BlendModeOption, DesignTransform, GarmentConfig, ViewSide } from '@/types/mockup'
+import type { DesignTransform, ViewSide } from '@/types/mockup'
+import EditorCanvas from './EditorCanvas'
+import EditorHeader from './EditorHeader'
+import EditorSidebar, { type CsvFields } from './EditorSidebar'
+import ErrorToast from './ErrorToast'
+import { useContainerSize } from './useContainerSize'
+import { useKeyboardShortcuts } from './useKeyboardShortcuts'
 
-// ─── Garment config (inline para MVP) ────────────────────────────────────────
-const GARMENT: GarmentConfig = {
-  name: 'Oversized Tee',
-  front: {
-    // Logo pequeno no peito esquerdo de quem usa (lado direito da imagem,
-    // já que a foto é "de frente" pra quem olha) — não é mais o print
-    // grande centralizado, isso ficou só pro verso.
-    image: '/garments/tshirt-front.jpg',
-    imageWidth: 720,
-    imageHeight: 1280,
-    printArea: { x: 411, y: 399, width: 119, height: 123 },
-  },
-  back: {
-    // Foto original vinha "menor" no frame que a da frente (mesma peça, mais
-    // afastada da câmera) — reenquadrada (upscale + crop central 124%) pra
-    // bater na mesma escala/posição da frente. printArea maior/mais
-    // centralizada que a da frente por ajuste manual no editor.
-    image: '/garments/tshirt-back.jpg',
-    imageWidth: 720,
-    imageHeight: 1280,
-    printArea: { x: 164, y: 396, width: 376, height: 640 },
-  },
-}
-
-const BLEND_MODES: { label: string; value: BlendModeOption }[] = [
-  { label: 'Normal', value: 'source-over' },
-  { label: 'Screen', value: 'screen' },
-  { label: 'Overlay', value: 'overlay' },
-  { label: 'Multiply', value: 'multiply' },
-]
-
-const EXPORT_FORMATS: { label: string; sub: string; value: ExportFormat }[] = [
-  { label: 'PNG Original', sub: '720 × 1280', value: 'original' },
-  { label: 'Feed Instagram', sub: '1080 × 1350 · 4:5', value: 'feed' },
-  { label: 'Story Instagram', sub: '1080 × 1920 · 9:16', value: 'story' },
-]
-
-const STORAGE_KEY = 'mockupdrop_state'
-
-// Estado persistido: transform em coordenadas da imagem (px / scale),
-// pra sobreviver a mudança de viewport.
-interface PersistedTransform {
-  x: number
-  y: number
-  width: number
-  height: number
-  rotation: number
-  opacity: number
-  blendMode: BlendModeOption
-}
-// Um transform por lado — frente e verso guardam posição/tamanho/rotação
-// independentes (antes era um único transform, sobrescrito toda vez que
-// trocava de lado).
-interface PersistedTransforms {
-  front: PersistedTransform | null
-  back: PersistedTransform | null
-}
-// Estampa também por lado — frente e verso são desenhos diferentes (ex.:
-// logo pequeno no peito x arte grande no verso), não a mesma imagem
-// reposicionada. As imagens em si NÃO entram aqui (localStorage tem cota
-// pequena, ~5-10MB) — vivem no IndexedDB (lib/imageStore.ts), com formatos
-// antigos (v1-v3) migrados de lá pra cá na hidratação.
-interface PersistedDesignSrcs {
-  front: string | null
-  back: string | null
-}
-interface PersistedState {
-  v: 4
-  view: ViewSide
-  realism: boolean
-  knockout: KnockoutOptions
-  transforms: PersistedTransforms
-}
-
-function defaultTransformFor(view: ViewSide, s: number): DesignTransform {
-  const pa = GARMENT[view].printArea
-  return {
-    x: pa.x * s,
-    y: pa.y * s,
-    width: pa.width * s,
-    height: pa.height * s,
-    rotation: 0,
-    opacity: 1,
-    blendMode: 'source-over',
-  }
-}
-
-// ─── Slider component ─────────────────────────────────────────────────────────
-function Slider({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  display,
-  onChange,
-}: {
-  label: string
-  value: number
-  min: number
-  max: number
-  step?: number
-  display?: string
-  onChange: (v: number) => void
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
-        <span style={{ color: 'var(--text-muted)', fontWeight: 600, letterSpacing: '0.05em' }}>
-          {label}
-        </span>
-        <span style={{ color: 'var(--text)', fontWeight: 700 }}>{display ?? value}</span>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
-    </div>
-  )
-}
-
-// ─── Seletor de lista de arquivos do lote (frente/verso) ───────────────────
-function BatchPicker({
-  label,
-  count,
-  disabled,
-  inputRef,
-  onFiles,
-}: {
-  label: string
-  count: number
-  disabled: boolean
-  inputRef: React.RefObject<HTMLInputElement | null>
-  onFiles: (files: FileList) => void
-}) {
-  return (
-    <div>
-      <button
-        onClick={() => inputRef.current?.click()}
-        disabled={disabled}
-        style={{
-          width: '100%',
-          padding: '12px',
-          border: '1.5px dashed var(--border)',
-          borderRadius: '10px',
-          background: 'var(--surface2)',
-          color: 'var(--text)',
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          fontSize: '0.8rem',
-          fontWeight: 600,
-        }}
-      >
-        {count ? `🔄 ${label} (${count})` : `🗂 ${label}`}
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          const files = e.target.files
-          if (files && files.length) onFiles(files)
-          e.target.value = ''
-        }}
-      />
-    </div>
-  )
-}
+const DEFAULT_CSV: CsvFields = { vendor: '', type: 'Camiseta Oversized', tags: '', price: '', qty: '' }
 
 // ─── Main Editor ──────────────────────────────────────────────────────────────
+// Container: dono de todo o estado + regras de negócio. A apresentação vive
+// em EditorHeader/EditorSidebar/EditorCanvas (components/editor/), e a lógica
+// pura (persistência, geometria, config da peça) em lib/.
 export default function MockupEditor() {
   const [view, setView] = useState<ViewSide>('front')
   // Estampa por lado (frente/verso) — são desenhos diferentes, não a mesma
@@ -209,8 +52,6 @@ export default function MockupEditor() {
   const [exporting, setExporting] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const [hydrated, setHydrated] = useState(false)
-  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 })
-  const [scale, setScale] = useState(1)
 
   // ─── Erros (upload, processamento, export) — antes falhavam em silêncio ───
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -239,59 +80,36 @@ export default function MockupEditor() {
   // transforms restaurados do localStorage (coords de imagem), aplicados quando o scale existir
   const restoredRef = useRef<PersistedTransforms | null>(null)
 
+  const { containerSize, scale } = useContainerSize(mainRef)
+
   // ─── Hidratação: restaura o último estado ──────────────────────────────────
   useEffect(() => {
-    // formatos antigos (v1-v3) guardavam a(s) imagem(ns) junto no localStorage
-    // — se achar, migra pro IndexedDB abaixo (o próximo autosave já não
-    // regrava mais isso no localStorage, então a cota se libera sozinha).
-    let legacyDesigns: PersistedDesignSrcs | null = null
+    let raw: string | null = null
     try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (raw) {
-        const p = JSON.parse(raw) as Partial<PersistedState> & {
-          transform?: PersistedTransform | null
-          designSrc?: string | null
-          designSrcs?: Partial<PersistedDesignSrcs>
-        }
-        if (p && typeof p === 'object') {
-          // eslint-disable-next-line react-hooks/set-state-in-effect -- hidrata estado de fonte externa (localStorage), roda uma única vez no mount
-          if (p.view === 'front' || p.view === 'back') setView(p.view)
-          if (typeof p.realism === 'boolean') setRealism(p.realism)
-          if (p.knockout && typeof p.knockout === 'object') {
-            const k = p.knockout as Partial<KnockoutOptions>
-            setKnockout({
-              enabled: !!k.enabled,
-              threshold: typeof k.threshold === 'number' ? k.threshold : DEFAULT_KNOCKOUT.threshold,
-              feather: typeof k.feather === 'number' ? k.feather : DEFAULT_KNOCKOUT.feather,
-            })
-          }
-          if (p.designSrcs && typeof p.designSrcs === 'object') {
-            legacyDesigns = { front: p.designSrcs.front ?? null, back: p.designSrcs.back ?? null }
-          } else if (typeof p.designSrc === 'string') {
-            // migração v1/v2 → v3: a mesma estampa salva valia pros dois lados
-            legacyDesigns = { front: p.designSrc, back: p.designSrc }
-          }
-          if (p.transforms && typeof p.transforms === 'object') {
-            const t = p.transforms as Partial<PersistedTransforms>
-            restoredRef.current = { front: t.front ?? null, back: t.back ?? null }
-          } else if (p.transform && typeof p.transform === 'object') {
-            // migração v1 → v2: o único transform salvo pertencia ao lado ativo
-            restoredRef.current =
-              p.view === 'back' ? { front: null, back: p.transform } : { front: p.transform, back: null }
-          }
-        }
-      }
+      raw = localStorage.getItem(STORAGE_KEY)
     } catch {
-      /* localStorage indisponível / JSON inválido — começa limpo */
+      /* localStorage indisponível — começa limpo */
+    }
+    const parsed = parseStoredState(raw, DEFAULT_KNOCKOUT)
+    if (parsed) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- hidrata estado de fonte externa (localStorage), roda uma única vez no mount
+      if (parsed.view) setView(parsed.view)
+      if (parsed.realism !== null) setRealism(parsed.realism)
+      if (parsed.knockout) setKnockout(parsed.knockout)
+      if (parsed.transforms) restoredRef.current = parsed.transforms
     }
 
+    const legacyDesigns = parsed?.legacyDesigns ?? null
     if (legacyDesigns) {
+      // formato antigo (v1-v3) guardava a(s) imagem(ns) junto no localStorage
+      // — migra pro IndexedDB (o próximo autosave já não regrava mais isso
+      // no localStorage, então a cota se libera sozinha).
       setDesignSrcs(legacyDesigns)
       if (legacyDesigns.front) void setDesign('front', legacyDesigns.front)
       if (legacyDesigns.back) void setDesign('back', legacyDesigns.back)
       setHydrated(true)
     } else {
-      // formato atual: imagem só vive no IndexedDB
+      // formato atual (v4): imagem só vive no IndexedDB
       Promise.all([getDesign('front'), getDesign('back')])
         .then(([front, back]) => setDesignSrcs({ front, back }))
         .catch(() => {
@@ -301,55 +119,23 @@ export default function MockupEditor() {
     }
   }, [])
 
-  // ─── Mede o container (mantém aspect ratio 720:1280 = 9:16) ────────────────
-  // Mede a partir do <main> (sempre montado) — a peça em si só é renderizada
-  // depois que containerSize existe, então não dá pra medir a partir dela.
-  useEffect(() => {
-    function measure() {
-      const parent = mainRef.current
-      if (!parent) return
-      const maxW = Math.min(parent.clientWidth, 480)
-      const maxH = window.innerHeight - 160
-      let w = maxW
-      let h = w * (1280 / 720)
-      if (h > maxH) {
-        h = maxH
-        w = h * (720 / 1280)
-      }
-      setContainerSize({ w, h })
-      setScale(w / 720)
-    }
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [])
-
   // ─── Aplica os transforms restaurados assim que o scale estiver disponível ─
   useEffect(() => {
     if (!hydrated || !scale) return
-    const toTransform = (n: PersistedTransform | null): DesignTransform | null =>
-      n
-        ? {
-            x: n.x * scale,
-            y: n.y * scale,
-            width: n.width * scale,
-            height: n.height * scale,
-            rotation: typeof n.rotation === 'number' ? n.rotation : 0,
-            opacity: typeof n.opacity === 'number' ? n.opacity : 1,
-            blendMode: n.blendMode ?? 'source-over',
-          }
-        : null
     const restored = restoredRef.current
     if (restored) {
       restoredRef.current = null
-      setTransforms({ front: toTransform(restored.front), back: toTransform(restored.back) })
+      setTransforms({
+        front: toDisplayTransform(restored.front, scale),
+        back: toDisplayTransform(restored.back, scale),
+      })
       setSelected(true)
       return
     }
     // designSrc restaurado sem transform pro respectivo lado (situação anômala) — cai no default
     setTransforms((t) => ({
-      front: t.front ?? (designSrcs.front ? defaultTransformFor('front', scale) : null),
-      back: t.back ?? (designSrcs.back ? defaultTransformFor('back', scale) : null),
+      front: t.front ?? (designSrcs.front ? defaultTransformFor(GARMENT, 'front', scale) : null),
+      back: t.back ?? (designSrcs.back ? defaultTransformFor(GARMENT, 'back', scale) : null),
     }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, scale])
@@ -358,31 +144,12 @@ export default function MockupEditor() {
   useEffect(() => {
     if (!hydrated || !scale) return
     try {
-      const toPersisted = (t: DesignTransform | null): PersistedTransform | null =>
-        t
-          ? {
-              x: t.x / scale,
-              y: t.y / scale,
-              width: t.width / scale,
-              height: t.height / scale,
-              rotation: t.rotation,
-              opacity: t.opacity,
-              blendMode: t.blendMode,
-            }
-          : null
       // v4: as imagens NÃO entram mais aqui — vivem no IndexedDB (efeitos
       // abaixo), esse payload fica pequeno e nunca estoura a cota do
       // localStorage sozinho.
-      const payload: PersistedState = {
-        v: 4,
-        view,
-        realism,
-        knockout,
-        transforms: { front: toPersisted(transforms.front), back: toPersisted(transforms.back) },
-      }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
+      localStorage.setItem(STORAGE_KEY, serializeState({ view, realism, knockout, transforms, scale }))
     } catch (err) {
-      console.warn('[MockupDrop] falha ao salvar estado no localStorage:', err)
+      console.warn('[SixOneSix] falha ao salvar estado no localStorage:', err)
       if (!storageWarnedRef.current) {
         storageWarnedRef.current = true
         showError('Não foi possível salvar automaticamente (armazenamento local cheio ou indisponível).')
@@ -418,7 +185,7 @@ export default function MockupEditor() {
       })
       .catch((err) => {
         if (cancelled) return
-        console.error('[MockupDrop] falha ao aplicar knockout de preto:', err)
+        console.error('[SixOneSix] falha ao aplicar knockout de preto:', err)
         showError('Falha ao processar "remover preto" — usando a estampa original.')
         setProcessedDesignSrc(designSrc)
       })
@@ -436,7 +203,7 @@ export default function MockupEditor() {
 
   const resetPosition = useCallback(() => {
     if (!scale) return
-    setTransforms((t) => ({ ...t, [view]: defaultTransformFor(view, scale) }))
+    setTransforms((t) => ({ ...t, [view]: defaultTransformFor(GARMENT, view, scale) }))
     setSelected(true)
   }, [view, scale])
 
@@ -451,7 +218,7 @@ export default function MockupEditor() {
         // no verso) — nunca a mesma imagem repetida dos dois lados.
         setDesignSrcs((d) => ({ ...d, [targetView]: src }))
         const s = scale || 1
-        setTransforms((t) => ({ ...t, [targetView]: defaultTransformFor(targetView, s) }))
+        setTransforms((t) => ({ ...t, [targetView]: defaultTransformFor(GARMENT, targetView, s) }))
         setSelected(true)
       }
       reader.onerror = () => {
@@ -483,61 +250,28 @@ export default function MockupEditor() {
     setSelected(false)
   }, [view])
 
-  // ─── Atalhos de teclado ───────────────────────────────────────────────────
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      const el = document.activeElement as HTMLElement | null
-      const tag = el?.tagName
-      const inForm = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
-
-      switch (e.key) {
-        case 'ArrowUp':
-        case 'ArrowDown':
-        case 'ArrowLeft':
-        case 'ArrowRight': {
-          if (inForm || !designSrc || !selected) return
-          e.preventDefault()
-          const step = e.shiftKey ? 10 : 1
-          const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
-          const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0
-          setTransforms((t) =>
-            t[view] ? { ...t, [view]: { ...t[view]!, x: t[view]!.x + dx, y: t[view]!.y + dy } } : t,
-          )
-          break
-        }
-        case 'Delete':
-        case 'Backspace': {
-          if (inForm || !designSrc) return
-          e.preventDefault()
-          removeDesign()
-          break
-        }
-        case 'r':
-        case 'R': {
-          if (inForm) return
-          e.preventDefault()
-          resetPosition()
-          break
-        }
-        case 'f':
-        case 'F': {
-          if (inForm) return
-          e.preventDefault()
-          setView((v) => (v === 'front' ? 'back' : 'front'))
-          break
-        }
-        case 'Escape': {
-          setSelected(false)
-          setMenuOpen(false)
-          el?.blur()
-          break
-        }
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [selected, designSrc, removeDesign, resetPosition, view])
+  const nudge = useCallback(
+    (dx: number, dy: number) => {
+      setTransforms((t) =>
+        t[view] ? { ...t, [view]: { ...t[view]!, x: t[view]!.x + dx, y: t[view]!.y + dy } } : t,
+      )
+    },
+    [view],
+  )
+  const toggleView = useCallback(() => setView((v) => (v === 'front' ? 'back' : 'front')), [])
+  const deselectAndCloseMenu = useCallback(() => {
+    setSelected(false)
+    setMenuOpen(false)
+  }, [])
+  useKeyboardShortcuts({
+    designSrc,
+    selected,
+    onNudge: nudge,
+    onRemove: removeDesign,
+    onResetPosition: resetPosition,
+    onToggleView: toggleView,
+    onDeselect: deselectAndCloseMenu,
+  })
 
   // ─── Fecha o menu de export ao clicar fora ────────────────────────────────
   useEffect(() => {
@@ -572,7 +306,7 @@ export default function MockupEditor() {
           view,
         })
       } catch (err) {
-        console.error('[MockupDrop] falha ao exportar mockup:', err)
+        console.error('[SixOneSix] falha ao exportar mockup:', err)
         showError('Falha ao exportar o mockup. Tente novamente.')
       } finally {
         setExporting(false)
@@ -640,7 +374,7 @@ export default function MockupEditor() {
           )
         }
       } catch (err) {
-        console.error('[MockupDrop] falha ao gerar lote:', err)
+        console.error('[SixOneSix] falha ao gerar lote:', err)
         showError('Falha ao gerar o lote. Tente novamente.')
       } finally {
         setBatchExporting(false)
@@ -651,942 +385,99 @@ export default function MockupEditor() {
   )
 
   // ─── CSV de importação do Shopify (metadados — sem imagem, ver lib/shopifyCsv) ──
-  const [csvVendor, setCsvVendor] = useState('')
-  const [csvType, setCsvType] = useState('Camiseta Oversized')
-  const [csvTags, setCsvTags] = useState('')
-  const [csvPrice, setCsvPrice] = useState('')
-  const [csvQty, setCsvQty] = useState('')
+  const [csv, setCsv] = useState<CsvFields>(DEFAULT_CSV)
+  const onCsvChange = useCallback(
+    (field: keyof CsvFields, value: string) => setCsv((c) => ({ ...c, [field]: value })),
+    [],
+  )
 
   const downloadShopifyCsv = useCallback(() => {
     if (!batchReady) return
     const rows = batchFront.map((_, i) => ({
       num: String(i + 1).padStart(3, '0'),
-      vendor: csvVendor,
-      productType: csvType,
-      tags: csvTags,
-      price: csvPrice,
-      inventoryQty: csvQty,
+      vendor: csv.vendor,
+      productType: csv.type,
+      tags: csv.tags,
+      price: csv.price,
+      inventoryQty: csv.qty,
     }))
     downloadCsv(buildShopifyCsv(rows), `shopify-produtos-${Date.now()}.csv`)
-  }, [batchReady, batchFront, csvVendor, csvType, csvTags, csvPrice, csvQty])
+  }, [batchReady, batchFront, csv])
 
   const garmentView = GARMENT[view]
   const printArea = garmentView.printArea
-
-  const guideX = printArea.x * scale
-  const guideY = printArea.y * scale
-  const guideW = printArea.width * scale
-  const guideH = printArea.height * scale
+  const guide = {
+    x: printArea.x * scale,
+    y: printArea.y * scale,
+    width: printArea.width * scale,
+    height: printArea.height * scale,
+  }
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        background: 'var(--bg)',
-        display: 'flex',
-        flexDirection: 'column',
-      }}
-    >
-      {/* ── Toast de erro ── */}
-      {errorMsg && (
-        <div
-          role="alert"
-          style={{
-            position: 'fixed',
-            top: '16px',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 100,
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            maxWidth: '90vw',
-            background: '#2a0e0e',
-            border: '1px solid #7a2323',
-            color: '#ffb4b4',
-            padding: '10px 14px',
-            borderRadius: '8px',
-            fontSize: '0.8rem',
-            fontWeight: 600,
-            lineHeight: 1.4,
-            boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
-          }}
-        >
-          <span>{errorMsg}</span>
-          <button
-            onClick={() => setErrorMsg(null)}
-            aria-label="Fechar aviso"
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: '#ffb4b4',
-              cursor: 'pointer',
-              fontWeight: 900,
-              fontSize: '0.9rem',
-              lineHeight: 1,
-              flexShrink: 0,
-            }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
+    <div style={{ minHeight: '100vh', background: 'var(--bg)', display: 'flex', flexDirection: 'column' }}>
+      {errorMsg && <ErrorToast message={errorMsg} onDismiss={() => setErrorMsg(null)} />}
 
-      {/* ── Top Bar ── */}
-      <header
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '14px 24px',
-          borderBottom: '1px solid var(--border)',
-          background: 'var(--surface)',
-          gap: '16px',
-          flexWrap: 'wrap',
-        }}
-      >
-        <Link
-          href="/"
-          style={{
-            fontWeight: 900,
-            fontSize: '1.1rem',
-            letterSpacing: '-0.02em',
-            color: 'var(--accent)',
-            textDecoration: 'none',
-          }}
-        >
-          MOCKUPDROP
-        </Link>
+      <EditorHeader
+        view={view}
+        onViewChange={setView}
+        designSrc={designSrc}
+        exporting={exporting}
+        menuOpen={menuOpen}
+        onToggleMenu={() => setMenuOpen((o) => !o)}
+        exportWrapRef={exportWrapRef}
+        onExport={runExport}
+      />
 
-        {/* View Toggle */}
-        <div
-          style={{
-            display: 'flex',
-            background: 'var(--surface2)',
-            border: '1px solid var(--border)',
-            borderRadius: '8px',
-            overflow: 'hidden',
-          }}
-        >
-          {(['front', 'back'] as ViewSide[]).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              style={{
-                padding: '8px 20px',
-                fontWeight: 700,
-                fontSize: '0.8rem',
-                letterSpacing: '0.06em',
-                background: view === v ? 'var(--accent)' : 'transparent',
-                color: view === v ? '#000' : 'var(--text-muted)',
-                border: 'none',
-                cursor: 'pointer',
-                textTransform: 'uppercase',
-              }}
-            >
-              {v === 'front' ? 'Frente' : 'Verso'}
-            </button>
-          ))}
-        </div>
+      <div style={{ flex: 1, display: 'flex', gap: '0', overflow: 'hidden' }}>
+        <EditorSidebar
+          view={view}
+          designSrc={designSrc}
+          fileInputRef={fileInputRef}
+          onFileChange={handleFileUpload}
+          onUploadClick={() => fileInputRef.current?.click()}
+          onRemoveDesign={removeDesign}
+          batchFront={batchFront}
+          batchBack={batchBack}
+          batchFrontInputRef={batchFrontInputRef}
+          batchBackInputRef={batchBackInputRef}
+          batchExporting={batchExporting}
+          batchProgress={batchProgress}
+          batchCountMismatch={batchCountMismatch}
+          batchReady={batchReady}
+          onBatchFiles={handleBatchFilesSelected}
+          onClearBatch={clearBatch}
+          onRunBatchExport={runBatchExport}
+          csv={csv}
+          onCsvChange={onCsvChange}
+          onDownloadCsv={downloadShopifyCsv}
+          transform={transform}
+          containerSize={containerSize}
+          scale={scale}
+          onUpdateTransform={updateTransform}
+          realism={realism}
+          onRealismChange={setRealism}
+          knockout={knockout}
+          onKnockoutChange={setKnockout}
+          showGuide={showGuide}
+          onShowGuideChange={setShowGuide}
+          onResetPosition={resetPosition}
+        />
 
-        {/* Export + menu de formatos */}
-        <div ref={exportWrapRef} style={{ position: 'relative' }}>
-          <button
-            onClick={() => designSrc && setMenuOpen((o) => !o)}
-            disabled={!designSrc || exporting}
-            style={{
-              background: designSrc ? 'var(--accent)' : 'var(--border)',
-              color: designSrc ? '#000' : 'var(--text-muted)',
-              border: 'none',
-              borderRadius: '8px',
-              padding: '10px 24px',
-              fontWeight: 800,
-              fontSize: '0.85rem',
-              letterSpacing: '0.04em',
-              cursor: designSrc ? 'pointer' : 'not-allowed',
-            }}
-          >
-            {exporting ? 'EXPORTANDO...' : '⬇ EXPORTAR ▾'}
-          </button>
-
-          {menuOpen && designSrc && (
-            <div
-              style={{
-                position: 'absolute',
-                top: 'calc(100% + 8px)',
-                right: 0,
-                minWidth: '220px',
-                background: 'var(--surface)',
-                border: '1px solid var(--border)',
-                borderRadius: '10px',
-                padding: '6px',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '2px',
-                zIndex: 50,
-                boxShadow: '0 16px 40px rgba(0,0,0,0.5)',
-              }}
-            >
-              {EXPORT_FORMATS.map((f) => (
-                <button
-                  key={f.value}
-                  onClick={() => runExport(f.value)}
-                  style={{
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'flex-start',
-                    gap: '2px',
-                    padding: '10px 12px',
-                    background: 'transparent',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    color: 'var(--text)',
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--surface2)')}
-                  onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
-                >
-                  <span style={{ fontWeight: 700, fontSize: '0.82rem' }}>{f.label}</span>
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{f.sub}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      </header>
-
-      {/* ── Body ── */}
-      <div
-        style={{
-          flex: 1,
-          display: 'flex',
-          gap: '0',
-          overflow: 'hidden',
-        }}
-      >
-        {/* ── Sidebar ── */}
-        <aside
-          style={{
-            width: '260px',
-            minWidth: '220px',
-            background: 'var(--surface)',
-            borderRight: '1px solid var(--border)',
-            padding: '24px 20px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '24px',
-            overflowY: 'auto',
-          }}
-        >
-          {/* Upload */}
-          <div>
-            <p
-              style={{
-                fontSize: '0.7rem',
-                fontWeight: 700,
-                letterSpacing: '0.1em',
-                color: 'var(--text-muted)',
-                margin: '0 0 10px 0',
-              }}
-            >
-              ESTAMPA — {view === 'front' ? 'FRENTE' : 'VERSO'}
-            </p>
-            <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: 1.5 }}>
-              Vale só pra este lado — {view === 'front' ? 'o verso' : 'a frente'} tem a própria
-              estampa, independente.
-            </p>
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              style={{
-                width: '100%',
-                padding: '14px',
-                border: '1.5px dashed var(--border)',
-                borderRadius: '10px',
-                background: 'var(--surface2)',
-                color: 'var(--text)',
-                cursor: 'pointer',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-              }}
-            >
-              {designSrc
-                ? `🔄 Trocar estampa (${view === 'front' ? 'frente' : 'verso'})`
-                : `⬆ Upload PNG / SVG (${view === 'front' ? 'frente' : 'verso'})`}
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) handleFileUpload(file)
-                e.target.value = ''
-              }}
-            />
-            {designSrc && (
-              <button
-                onClick={removeDesign}
-                style={{
-                  width: '100%',
-                  marginTop: '8px',
-                  padding: '9px',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  background: 'transparent',
-                  color: 'var(--text-muted)',
-                  cursor: 'pointer',
-                  fontSize: '0.75rem',
-                  fontWeight: 700,
-                }}
-              >
-                🗑 Remover estampa ({view === 'front' ? 'frente' : 'verso'})
-              </button>
-            )}
-          </div>
-
-          {/* Lote pareado: 2 listas (frente/verso), combinadas pela ordem */}
-          <div>
-            <p
-              style={{
-                fontSize: '0.7rem',
-                fontWeight: 700,
-                letterSpacing: '0.1em',
-                color: 'var(--text-muted)',
-                margin: '0 0 10px 0',
-              }}
-            >
-              LOTE PAREADO (FRENTE + VERSO)
-            </p>
-            <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: 1.5 }}>
-              Seleciona uma lista de imagens pra frente e outra pro verso — a 1ª de cada vira o produto
-              001, a 2ª o 002, etc. As duas listas precisam ter a mesma quantidade.
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <BatchPicker
-                label="Lote — Frente"
-                count={batchFront.length}
-                disabled={batchExporting}
-                inputRef={batchFrontInputRef}
-                onFiles={(files) => handleBatchFilesSelected('front', files)}
-              />
-              <BatchPicker
-                label="Lote — Verso"
-                count={batchBack.length}
-                disabled={batchExporting}
-                inputRef={batchBackInputRef}
-                onFiles={(files) => handleBatchFilesSelected('back', files)}
-              />
-            </div>
-
-            {(batchFront.length > 0 || batchBack.length > 0) && (
-              <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                {batchCountMismatch ? (
-                  <p style={{ fontSize: '0.7rem', color: '#ffb4b4', margin: 0, lineHeight: 1.5, fontWeight: 600 }}>
-                    Quantidade diferente: frente tem {batchFront.length}, verso tem {batchBack.length}.
-                    Ajusta as duas listas pra ficarem com o mesmo número antes de gerar.
-                  </p>
-                ) : (
-                  batchReady && (
-                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
-                      {batchFront.length} produtos prontos — a 1ª imagem de cada lista já está no canvas.
-                      Ajuste a posição na frente <b style={{ color: 'var(--text)' }}>e</b> no verso
-                      (troca de lado acima) e gere o lote: sai frente + verso de cada produto, numeradas
-                      (001-frente.png, 001-verso.png...).
-                    </p>
-                  )
-                )}
-
-                {batchExporting ? (
-                  <div>
-                    <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text)', margin: '0 0 6px 0' }}>
-                      Gerando {batchProgress?.done ?? 0}/{batchProgress?.total ?? batchFront.length}...
-                    </p>
-                    <div
-                      style={{
-                        height: '6px',
-                        background: 'var(--border)',
-                        borderRadius: '3px',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <div
-                        style={{
-                          height: '100%',
-                          width: `${Math.round(
-                            ((batchProgress?.done ?? 0) / (batchProgress?.total || batchFront.length)) * 100,
-                          )}%`,
-                          background: 'var(--accent)',
-                          transition: 'width 150ms linear',
-                        }}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                    {EXPORT_FORMATS.map((f) => (
-                      <button
-                        key={f.value}
-                        onClick={() => runBatchExport(f.value)}
-                        disabled={!batchReady}
-                        style={{
-                          width: '100%',
-                          padding: '9px 12px',
-                          background: batchReady ? 'var(--surface2)' : 'transparent',
-                          color: batchReady ? 'var(--text)' : 'var(--text-muted)',
-                          border: '1px solid var(--border)',
-                          borderRadius: '8px',
-                          cursor: batchReady ? 'pointer' : 'not-allowed',
-                          fontSize: '0.75rem',
-                          fontWeight: 700,
-                          textAlign: 'left',
-                        }}
-                      >
-                        🗂 Gerar lote (.zip) — {f.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  onClick={clearBatch}
-                  disabled={batchExporting}
-                  style={{
-                    width: '100%',
-                    padding: '8px',
-                    background: 'transparent',
-                    color: 'var(--text-muted)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    cursor: batchExporting ? 'not-allowed' : 'pointer',
-                    fontSize: '0.72rem',
-                    fontWeight: 700,
-                  }}
-                >
-                  Limpar lote
-                </button>
-              </div>
-            )}
-
-            {/* CSV de importação do Shopify — só metadados, sem imagem */}
-            {batchReady && (
-              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <div style={{ height: '1px', background: 'var(--border)', margin: '4px 0' }} />
-                <p style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--text-muted)', margin: 0 }}>
-                  CSV SHOPIFY ({batchFront.length} produtos)
-                </p>
-                <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
-                  Cria os produtos em rascunho (Configurações → Importar produtos). Imagem não vai no
-                  CSV — depois de importar, arraste os PNGs do .zip pra cada produto (número bate:
-                  estampa-001 ↔ 001-frente.png).
-                </p>
-                {(
-                  [
-                    ['Marca', csvVendor, setCsvVendor],
-                    ['Tipo', csvType, setCsvType],
-                    ['Tags (separadas por vírgula)', csvTags, setCsvTags],
-                    ['Preço', csvPrice, setCsvPrice],
-                    ['Estoque por produto', csvQty, setCsvQty],
-                  ] as const
-                ).map(([label, value, setter]) => (
-                  <label key={label} style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                    <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                      {label}
-                    </span>
-                    <input
-                      type="text"
-                      value={value}
-                      onChange={(e) => setter(e.target.value)}
-                      style={{
-                        width: '100%',
-                        padding: '7px 10px',
-                        background: 'var(--surface2)',
-                        border: '1px solid var(--border)',
-                        borderRadius: '6px',
-                        color: 'var(--text)',
-                        fontSize: '0.78rem',
-                      }}
-                    />
-                  </label>
-                ))}
-                <button
-                  onClick={downloadShopifyCsv}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    background: 'var(--surface2)',
-                    color: 'var(--text)',
-                    border: '1px solid var(--border)',
-                    borderRadius: '8px',
-                    cursor: 'pointer',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                  }}
-                >
-                  ⬇ Baixar CSV Shopify
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Controls (only when design is loaded) */}
-          {transform && (
-            <>
-              <div style={{ height: '1px', background: 'var(--border)' }} />
-
-              {/* Position */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <p
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.1em',
-                    color: 'var(--text-muted)',
-                    margin: 0,
-                  }}
-                >
-                  POSIÇÃO
-                </p>
-                <Slider
-                  label="X"
-                  value={Math.round(transform.x)}
-                  min={-200}
-                  max={containerSize.w}
-                  onChange={(v) => updateTransform({ x: v })}
-                />
-                <Slider
-                  label="Y"
-                  value={Math.round(transform.y)}
-                  min={-200}
-                  max={containerSize.h}
-                  onChange={(v) => updateTransform({ y: v })}
-                />
-              </div>
-
-              <div style={{ height: '1px', background: 'var(--border)' }} />
-
-              {/* Size */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <p
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.1em',
-                    color: 'var(--text-muted)',
-                    margin: 0,
-                  }}
-                >
-                  TAMANHO
-                </p>
-                <Slider
-                  label="Largura"
-                  value={Math.round(transform.width)}
-                  min={20}
-                  max={containerSize.w}
-                  onChange={(v) => updateTransform({ width: v })}
-                  display={`${Math.round(transform.width)}px`}
-                />
-                <Slider
-                  label="Altura"
-                  value={Math.round(transform.height)}
-                  min={20}
-                  max={containerSize.h}
-                  onChange={(v) => updateTransform({ height: v })}
-                  display={`${Math.round(transform.height)}px`}
-                />
-                {scale > 0 && (
-                  <p
-                    style={{
-                      fontSize: '0.68rem',
-                      color: 'var(--text-muted)',
-                      margin: 0,
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    Coordenada na imagem (720×1280):{' '}
-                    <b style={{ color: 'var(--text)' }}>
-                      x={Math.round(transform.x / scale)} y={Math.round(transform.y / scale)} w=
-                      {Math.round(transform.width / scale)} h={Math.round(transform.height / scale)}
-                    </b>
-                  </p>
-                )}
-              </div>
-
-              <div style={{ height: '1px', background: 'var(--border)' }} />
-
-              {/* Transform */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                <p
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.1em',
-                    color: 'var(--text-muted)',
-                    margin: 0,
-                  }}
-                >
-                  AJUSTES
-                </p>
-                <Slider
-                  label="Rotação"
-                  value={transform.rotation}
-                  min={-180}
-                  max={180}
-                  display={`${transform.rotation}°`}
-                  onChange={(v) => updateTransform({ rotation: v })}
-                />
-                <Slider
-                  label="Opacidade"
-                  value={Math.round(transform.opacity * 100)}
-                  min={0}
-                  max={100}
-                  display={`${Math.round(transform.opacity * 100)}%`}
-                  onChange={(v) => updateTransform({ opacity: v / 100 })}
-                />
-              </div>
-
-              <div style={{ height: '1px', background: 'var(--border)' }} />
-
-              {/* Blend Mode */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <p
-                  style={{
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.1em',
-                    color: 'var(--text-muted)',
-                    margin: 0,
-                  }}
-                >
-                  BLEND MODE
-                </p>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {BLEND_MODES.map((bm) => (
-                    <button
-                      key={bm.value}
-                      onClick={() => updateTransform({ blendMode: bm.value })}
-                      style={{
-                        padding: '5px 10px',
-                        borderRadius: '5px',
-                        fontSize: '0.72rem',
-                        fontWeight: 700,
-                        border: '1px solid',
-                        borderColor:
-                          transform.blendMode === bm.value ? 'var(--accent)' : 'var(--border)',
-                        background:
-                          transform.blendMode === bm.value ? 'var(--accent-dim)' : 'transparent',
-                        color:
-                          transform.blendMode === bm.value ? 'var(--accent)' : 'var(--text-muted)',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      {bm.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div style={{ height: '1px', background: 'var(--border)' }} />
-
-              {/* Realismo */}
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  cursor: 'pointer',
-                  fontSize: '0.8rem',
-                  color: 'var(--text-muted)',
-                  fontWeight: 600,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={realism}
-                  onChange={(e) => setRealism(e.target.checked)}
-                  style={{ accentColor: 'var(--accent)', width: '14px', height: '14px' }}
-                />
-                Realismo (dobras do tecido no export)
-              </label>
-
-              <div style={{ height: '1px', background: 'var(--border)' }} />
-
-              {/* Knockout de preto */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <label
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '10px',
-                    cursor: 'pointer',
-                    fontSize: '0.8rem',
-                    color: 'var(--text-muted)',
-                    fontWeight: 600,
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={knockout.enabled}
-                    onChange={(e) => setKnockout((k) => ({ ...k, enabled: e.target.checked }))}
-                    style={{ accentColor: 'var(--accent)', width: '14px', height: '14px' }}
-                  />
-                  Remover preto (usa o preto da blusa)
-                </label>
-                {knockout.enabled && (
-                  <>
-                    <Slider
-                      label="Sensibilidade"
-                      value={knockout.threshold}
-                      min={0}
-                      max={150}
-                      onChange={(v) => setKnockout((k) => ({ ...k, threshold: v }))}
-                    />
-                    <Slider
-                      label="Suavidade"
-                      value={knockout.feather}
-                      min={5}
-                      max={150}
-                      onChange={(v) => setKnockout((k) => ({ ...k, feather: v }))}
-                    />
-                  </>
-                )}
-              </div>
-
-              {/* Guide Toggle */}
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  cursor: 'pointer',
-                  fontSize: '0.8rem',
-                  color: 'var(--text-muted)',
-                  fontWeight: 600,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={showGuide}
-                  onChange={(e) => setShowGuide(e.target.checked)}
-                  style={{ accentColor: 'var(--accent)', width: '14px', height: '14px' }}
-                />
-                Mostrar área de impressão
-              </label>
-
-              {/* Reset */}
-              <button
-                onClick={resetPosition}
-                style={{
-                  width: '100%',
-                  padding: '10px',
-                  background: 'transparent',
-                  color: 'var(--text-muted)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  fontSize: '0.78rem',
-                  fontWeight: 700,
-                  letterSpacing: '0.04em',
-                }}
-              >
-                RESETAR POSIÇÃO
-              </button>
-
-              {/* Atalhos */}
-              <p
-                style={{
-                  fontSize: '0.68rem',
-                  lineHeight: 1.7,
-                  color: 'var(--text-muted)',
-                  margin: 0,
-                }}
-              >
-                <b style={{ color: 'var(--text)' }}>Atalhos:</b> setas movem 1px ·
-                Shift+setas 10px · <b style={{ color: 'var(--text)' }}>R</b> reseta ·{' '}
-                <b style={{ color: 'var(--text)' }}>F</b> frente/verso ·{' '}
-                <b style={{ color: 'var(--text)' }}>Del</b> remove ·{' '}
-                <b style={{ color: 'var(--text)' }}>Esc</b> desseleciona
-              </p>
-            </>
-          )}
-        </aside>
-
-        {/* ── Canvas Area ── */}
-        <main
-          ref={mainRef}
-          style={{
-            flex: 1,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: '24px',
-            background: 'var(--bg)',
-            overflow: 'hidden',
-          }}
+        <EditorCanvas
+          mainRef={mainRef}
+          containerSize={containerSize}
+          garmentImage={garmentView.image}
+          guide={guide}
+          showGuide={showGuide}
+          designSrc={designSrc}
+          processedDesignSrc={processedDesignSrc}
+          transform={transform}
+          selected={selected}
+          onSelect={() => setSelected(true)}
+          onDeselect={() => setSelected(false)}
+          onTransformChange={updateTransform}
           onDrop={handleDrop}
-          onDragOver={(e) => e.preventDefault()}
-        >
-          {containerSize.w > 0 && (
-            <div
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget) setSelected(false)
-              }}
-              style={{
-                width: containerSize.w,
-                height: containerSize.h,
-                position: 'relative',
-                borderRadius: '12px',
-                overflow: 'hidden',
-                boxShadow: '0 0 0 1px var(--border), 0 24px 60px rgba(0,0,0,0.6)',
-              }}
-            >
-              {/* Shirt image */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={garmentView.image}
-                alt="Camiseta"
-                style={{
-                  position: 'absolute',
-                  inset: 0,
-                  width: '100%',
-                  height: '100%',
-                  objectFit: 'cover',
-                  userSelect: 'none',
-                  pointerEvents: 'none',
-                }}
-                draggable={false}
-              />
-
-              {/* Print area guide */}
-              {showGuide && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: guideX,
-                    top: guideY,
-                    width: guideW,
-                    height: guideH,
-                    border: '1.5px dashed rgba(200,255,0,0.45)',
-                    borderRadius: '4px',
-                    pointerEvents: 'none',
-                    boxSizing: 'border-box',
-                  }}
-                >
-                  <span
-                    style={{
-                      position: 'absolute',
-                      top: '-22px',
-                      left: 0,
-                      fontSize: '10px',
-                      color: 'var(--accent)',
-                      fontWeight: 700,
-                      letterSpacing: '0.06em',
-                      background: 'rgba(0,0,0,0.6)',
-                      padding: '2px 6px',
-                      borderRadius: '3px',
-                    }}
-                  >
-                    ÁREA DE IMPRESSÃO
-                  </span>
-                </div>
-              )}
-
-              {/* Design overlay — draggable + resizable */}
-              {designSrc && transform && (
-                <Rnd
-                  position={{ x: transform.x, y: transform.y }}
-                  size={{ width: transform.width, height: transform.height }}
-                  onDragStart={() => setSelected(true)}
-                  onDragStop={(_, d) => updateTransform({ x: d.x, y: d.y })}
-                  onResizeStop={(_, __, ref, ___, position) => {
-                    updateTransform({
-                      width: ref.offsetWidth,
-                      height: ref.offsetHeight,
-                      x: position.x,
-                      y: position.y,
-                    })
-                  }}
-                  bounds="parent"
-                  // Alças de resize só aparecem sem rotação, onde ficam alinhadas.
-                  // Com rotação, o box inteiro gira junto com a arte (fix visual).
-                  enableResizing={transform.rotation === 0}
-                  onMouseDown={() => setSelected(true)}
-                  style={{ zIndex: 10 }}
-                >
-                  <div
-                    style={{
-                      width: '100%',
-                      height: '100%',
-                      position: 'relative',
-                      transform: `rotate(${transform.rotation}deg)`,
-                    }}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={processedDesignSrc ?? designSrc}
-                      alt="Estampa"
-                      style={{
-                        width: '100%',
-                        height: '100%',
-                        objectFit: 'contain',
-                        opacity: transform.opacity,
-                        mixBlendMode: transform.blendMode as React.CSSProperties['mixBlendMode'],
-                        display: 'block',
-                        userSelect: 'none',
-                        pointerEvents: 'none',
-                      }}
-                      draggable={false}
-                    />
-                    {/* Selection frame */}
-                    <div
-                      style={{
-                        position: 'absolute',
-                        inset: 0,
-                        border: `1.5px solid ${
-                          selected ? 'rgba(200,255,0,0.6)' : 'rgba(200,255,0,0.15)'
-                        }`,
-                        borderRadius: '2px',
-                        pointerEvents: 'none',
-                      }}
-                    />
-                  </div>
-                </Rnd>
-              )}
-
-              {/* Drop zone hint when no design */}
-              {!designSrc && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: guideX,
-                    top: guideY,
-                    width: guideW,
-                    height: guideH,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '8px',
-                    color: 'rgba(200,255,0,0.6)',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    letterSpacing: '0.06em',
-                    textAlign: 'center',
-                    pointerEvents: 'none',
-                  }}
-                >
-                  <span style={{ fontSize: '2rem' }}>⬆</span>
-                  <span>
-                    ARRASTA A ESTAMPA
-                    <br />
-                    OU CLICA NO UPLOAD
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-        </main>
+        />
       </div>
     </div>
   )

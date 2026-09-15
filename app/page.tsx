@@ -1,11 +1,11 @@
 import Link from 'next/link'
+import BloodLogo from '@/components/BloodLogo'
 
 export default function Home() {
   return (
     <main
       style={{
         minHeight: '100vh',
-        background: 'var(--bg)',
         display: 'flex',
         flexDirection: 'column',
       }}
@@ -20,21 +20,14 @@ export default function Home() {
           borderBottom: '1px solid var(--border)',
         }}
       >
-        <span
-          style={{
-            fontWeight: 900,
-            fontSize: '1.25rem',
-            letterSpacing: '-0.02em',
-            color: 'var(--accent)',
-          }}
-        >
-          MOCKUPDROP
-        </span>
+        <Link href="/" aria-label="SixOneSix Mockup Maker Express">
+          <BloodLogo size="sm" tagline={false} />
+        </Link>
         <Link
           href="/editor"
           style={{
             background: 'var(--accent)',
-            color: '#000',
+            color: '#fff',
             padding: '8px 20px',
             borderRadius: '6px',
             fontWeight: 700,
@@ -73,7 +66,7 @@ export default function Home() {
             letterSpacing: '0.1em',
           }}
         >
-          STREETWEAR MOCKUP MAKER
+          SIXONESIX MAFIA · STREETWEAR MOCKUP MAKER
         </span>
 
         <h1
@@ -111,7 +104,7 @@ export default function Home() {
             href="/editor"
             style={{
               background: 'var(--accent)',
-              color: '#000',
+              color: '#fff',
               padding: '16px 36px',
               borderRadius: '8px',
               fontWeight: 900,
@@ -209,12 +202,16 @@ export default function Home() {
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: '12px',
           color: 'var(--text-muted)',
           fontSize: '0.8rem',
         }}
       >
-        <span style={{ fontWeight: 800, color: 'var(--accent)' }}>MOCKUPDROP</span>
-        <span>Feito para marcas streetwear 🔥</span>
+        <span style={{ fontWeight: 800, color: 'var(--accent)', letterSpacing: '0.04em' }}>
+          SIXONESIX MAFIA
+        </span>
+        <span>Mockup Maker Express — feito para marcas streetwear 🩸</span>
       </footer>
     </main>
   )

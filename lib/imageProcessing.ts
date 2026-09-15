@@ -15,6 +15,19 @@ export const DEFAULT_KNOCKOUT: KnockoutOptions = {
   feather: 50,
 }
 
+// Multiplicador de alfa (0-1) pra um pixel de luminância `lum`: 0 abaixo do
+// threshold (vira transparente), 1 acima de threshold+feather (opaco), e uma
+// rampa linear na faixa "feather" entre os dois — é a curva de transição do
+// knockout. Pura (sem canvas), separada do loop de pixels só pra poder
+// testar a curva sem mockar ImageData.
+export function alphaMultiplierForLuminance(lum: number, threshold: number, feather: number): number {
+  const t = Math.max(0, threshold)
+  const upper = t + Math.max(1, feather)
+  if (lum <= t) return 0
+  if (lum >= upper) return 1
+  return (lum - t) / (upper - t)
+}
+
 export async function applyBlackKnockout(src: string, opts: KnockoutOptions): Promise<string> {
   if (!opts.enabled) return src
 
@@ -31,16 +44,11 @@ export async function applyBlackKnockout(src: string, opts: KnockoutOptions): Pr
 
   const frame = ctx.getImageData(0, 0, w, h)
   const d = frame.data
-  const threshold = Math.max(0, opts.threshold)
-  const upper = threshold + Math.max(1, opts.feather)
 
   for (let i = 0; i < d.length; i += 4) {
     // luminância perceptual (Rec. 601)
     const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
-    let mul: number
-    if (lum <= threshold) mul = 0
-    else if (lum >= upper) mul = 1
-    else mul = (lum - threshold) / (upper - threshold)
+    const mul = alphaMultiplierForLuminance(lum, opts.threshold, opts.feather)
     if (mul < 1) d[i + 3] = Math.round(d[i + 3] * mul)
   }
 

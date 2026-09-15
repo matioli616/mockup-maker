@@ -1,4 +1,4 @@
-# MockupDrop
+# SixOneSix Mockup Maker Express
 
 Editor de mockups de camiseta streetwear que roda 100% no browser. Faz upload da
 estampa, posiciona sobre uma blusa oversized (frente ou verso), ajusta tamanho,
