@@ -9,12 +9,19 @@ export interface BatchItem {
   name: string
 }
 
+// Um par por produto: a estampa da frente e a do verso daquele produto —
+// combinadas pela ordem em que o usuário selecionou cada lista (a N-ésima
+// da frente com a N-ésima do verso).
+export interface BatchPair {
+  front: BatchItem
+  back: BatchItem
+}
+
 const VIEWS: ViewSide[] = ['front', 'back']
 
 export interface BatchOptions {
   garments: Record<ViewSide, GarmentView>
-  // transform de cada lado — os dois obrigatórios, já preenchidos assim que
-  // uma estampa é carregada (ver MockupEditor).
+  // transform de cada lado — os dois obrigatórios, já ajustados no editor.
   transforms: Record<ViewSide, DesignTransform>
   displayContainerW: number
   displayContainerH: number
@@ -31,26 +38,28 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 export interface BatchResult {
-  // nomes originais dos arquivos que falharam (imagem corrompida, etc.) —
-  // o lote continua e baixa o .zip com o que deu certo.
+  // descrição dos pares que falharam (nome frente/verso) — o lote continua
+  // e baixa o .zip com o que deu certo.
   failed: string[]
 }
 
-// Pra cada estampa do lote, gera frente E verso (mesma posição/config já
-// ajustada em cada lado) e numera pra casar produto = par de fotos na hora
-// de subir no Shopify: 001-frente.png + 001-verso.png, 002-frente.png, ...
-export async function exportBatch(items: BatchItem[], opts: BatchOptions): Promise<BatchResult> {
+// Pra cada par (frente, verso), gera as duas mockups (mesma posição/config
+// já ajustada em cada lado) e numera pra casar produto = par de fotos na
+// hora de subir no Shopify: 001-frente.png + 001-verso.png, 002-frente.png,
+// 002-verso.png, ...
+export async function exportBatch(pairs: BatchPair[], opts: BatchOptions): Promise<BatchResult> {
   const zip = new JSZip()
-  const total = items.length
+  const total = pairs.length
   const failed: string[] = []
 
   for (let i = 0; i < total; i++) {
     const num = String(i + 1).padStart(3, '0')
+    const pair = pairs[i]
     try {
-      const raw = await fileToDataURL(items[i].file)
-      const designSrc = await applyBlackKnockout(raw, opts.knockout)
-
       for (const view of VIEWS) {
+        const item = pair[view]
+        const raw = await fileToDataURL(item.file)
+        const designSrc = await applyBlackKnockout(raw, opts.knockout)
         const t = opts.transforms[view]
         const canvas = await composeMockup({
           garmentView: opts.garments[view],
@@ -71,18 +80,18 @@ export async function exportBatch(items: BatchItem[], opts: BatchOptions): Promi
         zip.file(`${num}-${VIEW_LABEL[view]}.png`, blob)
       }
     } catch (err) {
-      // uma estampa ruim no lote não pode derrubar as outras 49
-      console.error(`[batchExport] falha ao processar "${items[i].name}":`, err)
-      failed.push(items[i].name)
+      // um par ruim no lote não pode derrubar os outros
+      console.error(`[batchExport] falha ao processar par "${pair.front.name}" / "${pair.back.name}":`, err)
+      failed.push(`${pair.front.name} / ${pair.back.name}`)
     }
 
     opts.onProgress?.(i + 1, total)
-    // cede o main thread entre imagens pra sidebar/progresso continuar responsivos
+    // cede o main thread entre produtos pra sidebar/progresso continuar responsivos
     await new Promise((r) => requestAnimationFrame(r))
   }
 
   if (Object.keys(zip.files).length === 0) {
-    throw new Error('Nenhuma estampa do lote pôde ser processada.')
+    throw new Error('Nenhum par do lote pôde ser processado.')
   }
 
   const zipBlob = await zip.generateAsync({ type: 'blob' })

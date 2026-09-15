@@ -10,7 +10,9 @@ estampa nunca sai da sua máquina.
 ## Como usar
 
 1. Abra `/editor`.
-2. Clique em **Upload PNG / SVG** (ou arraste a imagem pro canvas).
+2. Clique em **Upload PNG / SVG** (ou arraste a imagem pro canvas). Frente e
+   verso guardam estampas **independentes** — o upload vale só pro lado
+   aberto no momento (ex.: logo pequeno na frente, arte grande no verso).
 3. Arraste a estampa pra posicionar e use as alças pra redimensionar. A área
    tracejada é a zona de impressão sugerida.
 4. Ajuste **rotação**, **opacidade** e **blend mode** na sidebar.
@@ -25,32 +27,35 @@ estampa nunca sai da sua máquina.
    - **Feed Instagram** — 1080×1350 (4:5)
    - **Story Instagram** — 1080×1920 (9:16)
 
-O estado (estampa, posição, tamanho, rotação, opacidade, blend, view, realismo,
-remover preto) é salvo automaticamente no `localStorage` e restaurado ao reabrir
-o editor.
+O estado (estampa de cada lado, posição, tamanho, rotação, opacidade, blend,
+view, realismo, remover preto) é salvo automaticamente no `localStorage` e
+restaurado ao reabrir o editor.
 
-### Lote (várias estampas de uma vez)
+### Lote pareado (várias estampas de uma vez, frente + verso)
 
-Na sidebar, em **Lote**, selecione várias imagens do mesmo tamanho (ex.: 50
-PNGs). A primeira carrega no canvas normalmente — posicione na **frente**,
-troque pro **verso** e posicione lá também (cada lado guarda a própria
+Na sidebar, em **Lote pareado**, selecione uma lista de imagens pra
+**Frente** e outra pra **Verso** — a 1ª de cada lista vira o produto `001`,
+a 2ª o `002`, e assim por diante (as duas listas precisam ter a mesma
+quantidade). A 1ª imagem de cada lista carrega no canvas normalmente:
+posicione na **frente** e no **verso** (cada lado guarda a própria
 posição/tamanho/rotação), ajuste opacidade/blend/realismo/remover-preto.
-Depois clique em **Gerar lote (.zip)** no formato desejado: o app aplica essa
-mesma configuração de cada lado a todas as outras estampas e baixa um único
-`.zip` com frente **e** verso de cada uma, numeradas — `001-frente.png`,
+Depois clique em **Gerar lote (.zip)** no formato desejado: o app aplica
+essa mesma configuração de cada lado a todos os produtos e baixa um único
+`.zip` com frente **e** verso de cada um, numeradas — `001-frente.png`,
 `001-verso.png`, `002-frente.png`, `002-verso.png`, ... — pronto pra subir
 como par de fotos de produto numa loja.
 
 ### CSV de importação do Shopify
 
-Com um lote carregado, a sidebar mostra **CSV Shopify**: preenche marca,
-tipo, tags, preço e estoque (aplicado a todos os produtos do lote) e clica em
-**Baixar CSV Shopify**. Gera um `.csv` pronto pra importar em
-Configurações → Importar produtos, um produto por estampa (`estampa-001`,
-`estampa-002`, ...), como rascunho. O CSV **não leva imagem** — o Shopify só
-aceita imagem por URL pública nesse tipo de import, e este app não tem
-servidor. Depois de importar, arrasta os PNGs do `.zip` do lote pra cada
-produto: o número bate (`estampa-001` ↔ `001-frente.png`/`001-verso.png`).
+Com o lote pareado pronto (as duas listas com a mesma quantidade), a
+sidebar mostra **CSV Shopify**: preenche marca, tipo, tags, preço e estoque
+(aplicado a todos os produtos do lote) e clica em **Baixar CSV Shopify**.
+Gera um `.csv` pronto pra importar em Configurações → Importar produtos, um
+produto por par (`estampa-001`, `estampa-002`, ...), como rascunho. O CSV
+**não leva imagem** — o Shopify só aceita imagem por URL pública nesse tipo
+de import, e este app não tem servidor. Depois de importar, arrasta os PNGs
+do `.zip` do lote pra cada produto: o número bate (`estampa-001` ↔
+`001-frente.png`/`001-verso.png`).
 
 ### Atalhos de teclado (no editor)
 

@@ -6,6 +6,7 @@ import { Rnd } from 'react-rnd'
 import { exportBatch } from '@/lib/batchExport'
 import { exportMockup, type ExportFormat } from '@/lib/export'
 import { applyBlackKnockout, DEFAULT_KNOCKOUT, type KnockoutOptions } from '@/lib/imageProcessing'
+import { getDesign, setDesign } from '@/lib/imageStore'
 import { buildShopifyCsv, downloadCsv } from '@/lib/shopifyCsv'
 import type { BlendModeOption, DesignTransform, GarmentConfig, ViewSide } from '@/types/mockup'
 
@@ -13,10 +14,13 @@ import type { BlendModeOption, DesignTransform, GarmentConfig, ViewSide } from '
 const GARMENT: GarmentConfig = {
   name: 'Oversized Tee',
   front: {
+    // Logo pequeno no peito esquerdo de quem usa (lado direito da imagem,
+    // já que a foto é "de frente" pra quem olha) — não é mais o print
+    // grande centralizado, isso ficou só pro verso.
     image: '/garments/tshirt-front.jpg',
     imageWidth: 720,
     imageHeight: 1280,
-    printArea: { x: 185, y: 400, width: 350, height: 550 },
+    printArea: { x: 411, y: 399, width: 119, height: 123 },
   },
   back: {
     // Foto original vinha "menor" no frame que a da frente (mesma peça, mais
@@ -63,12 +67,20 @@ interface PersistedTransforms {
   front: PersistedTransform | null
   back: PersistedTransform | null
 }
+// Estampa também por lado — frente e verso são desenhos diferentes (ex.:
+// logo pequeno no peito x arte grande no verso), não a mesma imagem
+// reposicionada. As imagens em si NÃO entram aqui (localStorage tem cota
+// pequena, ~5-10MB) — vivem no IndexedDB (lib/imageStore.ts), com formatos
+// antigos (v1-v3) migrados de lá pra cá na hidratação.
+interface PersistedDesignSrcs {
+  front: string | null
+  back: string | null
+}
 interface PersistedState {
-  v: 2
+  v: 4
   view: ViewSide
   realism: boolean
   knockout: KnockoutOptions
-  designSrc: string | null
   transforms: PersistedTransforms
 }
 
@@ -123,10 +135,65 @@ function Slider({
   )
 }
 
+// ─── Seletor de lista de arquivos do lote (frente/verso) ───────────────────
+function BatchPicker({
+  label,
+  count,
+  disabled,
+  inputRef,
+  onFiles,
+}: {
+  label: string
+  count: number
+  disabled: boolean
+  inputRef: React.RefObject<HTMLInputElement | null>
+  onFiles: (files: FileList) => void
+}) {
+  return (
+    <div>
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled}
+        style={{
+          width: '100%',
+          padding: '12px',
+          border: '1.5px dashed var(--border)',
+          borderRadius: '10px',
+          background: 'var(--surface2)',
+          color: 'var(--text)',
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          fontSize: '0.8rem',
+          fontWeight: 600,
+        }}
+      >
+        {count ? `🔄 ${label} (${count})` : `🗂 ${label}`}
+      </button>
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const files = e.target.files
+          if (files && files.length) onFiles(files)
+          e.target.value = ''
+        }}
+      />
+    </div>
+  )
+}
+
 // ─── Main Editor ──────────────────────────────────────────────────────────────
 export default function MockupEditor() {
   const [view, setView] = useState<ViewSide>('front')
-  const [designSrc, setDesignSrc] = useState<string | null>(null)
+  // Estampa por lado (frente/verso) — são desenhos diferentes, não a mesma
+  // imagem reposicionada (ex.: logo pequeno no peito x arte no verso).
+  const [designSrcs, setDesignSrcs] = useState<Record<ViewSide, string | null>>({
+    front: null,
+    back: null,
+  })
+  const designSrc = designSrcs[view]
   // Transform por lado (frente/verso) — trocar de view não mexe na posição
   // do outro lado.
   const [transforms, setTransforms] = useState<Record<ViewSide, DesignTransform | null>>({
@@ -155,26 +222,37 @@ export default function MockupEditor() {
     errorTimerRef.current = setTimeout(() => setErrorMsg(null), 6000)
   }, [])
 
-  // ─── Lote: N estampas, mesma posição/config da primeira ────────────────────
-  const [batchFiles, setBatchFiles] = useState<File[]>([])
+  // ─── Lote pareado: lista de frente + lista de verso, combinadas pela ordem
+  // (1ª da frente com 1ª do verso = produto 001, e assim por diante) — frente
+  // e verso são desenhos diferentes, cada lista tem sua própria config
+  // (posição/tamanho/rotação) já ajustada no editor pro lado respectivo.
+  const [batchFront, setBatchFront] = useState<File[]>([])
+  const [batchBack, setBatchBack] = useState<File[]>([])
   const [batchExporting, setBatchExporting] = useState(false)
   const [batchProgress, setBatchProgress] = useState<{ done: number; total: number } | null>(null)
 
   const mainRef = useRef<HTMLElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const batchInputRef = useRef<HTMLInputElement>(null)
+  const batchFrontInputRef = useRef<HTMLInputElement>(null)
+  const batchBackInputRef = useRef<HTMLInputElement>(null)
   const exportWrapRef = useRef<HTMLDivElement>(null)
   // transforms restaurados do localStorage (coords de imagem), aplicados quando o scale existir
   const restoredRef = useRef<PersistedTransforms | null>(null)
 
   // ─── Hidratação: restaura o último estado ──────────────────────────────────
   useEffect(() => {
+    // formatos antigos (v1-v3) guardavam a(s) imagem(ns) junto no localStorage
+    // — se achar, migra pro IndexedDB abaixo (o próximo autosave já não
+    // regrava mais isso no localStorage, então a cota se libera sozinha).
+    let legacyDesigns: PersistedDesignSrcs | null = null
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (raw) {
-        // formato antigo (v1) guardava um único `transform`; o novo (v2) guarda
-        // `transforms.{front,back}` — aceita os dois pra não perder estado salvo.
-        const p = JSON.parse(raw) as Partial<PersistedState> & { transform?: PersistedTransform | null }
+        const p = JSON.parse(raw) as Partial<PersistedState> & {
+          transform?: PersistedTransform | null
+          designSrc?: string | null
+          designSrcs?: Partial<PersistedDesignSrcs>
+        }
         if (p && typeof p === 'object') {
           // eslint-disable-next-line react-hooks/set-state-in-effect -- hidrata estado de fonte externa (localStorage), roda uma única vez no mount
           if (p.view === 'front' || p.view === 'back') setView(p.view)
@@ -187,7 +265,12 @@ export default function MockupEditor() {
               feather: typeof k.feather === 'number' ? k.feather : DEFAULT_KNOCKOUT.feather,
             })
           }
-          if (typeof p.designSrc === 'string') setDesignSrc(p.designSrc)
+          if (p.designSrcs && typeof p.designSrcs === 'object') {
+            legacyDesigns = { front: p.designSrcs.front ?? null, back: p.designSrcs.back ?? null }
+          } else if (typeof p.designSrc === 'string') {
+            // migração v1/v2 → v3: a mesma estampa salva valia pros dois lados
+            legacyDesigns = { front: p.designSrc, back: p.designSrc }
+          }
           if (p.transforms && typeof p.transforms === 'object') {
             const t = p.transforms as Partial<PersistedTransforms>
             restoredRef.current = { front: t.front ?? null, back: t.back ?? null }
@@ -201,7 +284,21 @@ export default function MockupEditor() {
     } catch {
       /* localStorage indisponível / JSON inválido — começa limpo */
     }
-    setHydrated(true)
+
+    if (legacyDesigns) {
+      setDesignSrcs(legacyDesigns)
+      if (legacyDesigns.front) void setDesign('front', legacyDesigns.front)
+      if (legacyDesigns.back) void setDesign('back', legacyDesigns.back)
+      setHydrated(true)
+    } else {
+      // formato atual: imagem só vive no IndexedDB
+      Promise.all([getDesign('front'), getDesign('back')])
+        .then(([front, back]) => setDesignSrcs({ front, back }))
+        .catch(() => {
+          /* IndexedDB indisponível — segue sem estampa restaurada */
+        })
+        .finally(() => setHydrated(true))
+    }
   }, [])
 
   // ─── Mede o container (mantém aspect ratio 720:1280 = 9:16) ────────────────
@@ -249,14 +346,11 @@ export default function MockupEditor() {
       setSelected(true)
       return
     }
-    // designSrc restaurado sem nenhum transform (situação anômala) — cai no default pros dois lados
-    setTransforms((t) => {
-      if (!designSrc) return t
-      return {
-        front: t.front ?? defaultTransformFor('front', scale),
-        back: t.back ?? defaultTransformFor('back', scale),
-      }
-    })
+    // designSrc restaurado sem transform pro respectivo lado (situação anômala) — cai no default
+    setTransforms((t) => ({
+      front: t.front ?? (designSrcs.front ? defaultTransformFor('front', scale) : null),
+      back: t.back ?? (designSrcs.back ? defaultTransformFor('back', scale) : null),
+    }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated, scale])
 
@@ -276,24 +370,35 @@ export default function MockupEditor() {
               blendMode: t.blendMode,
             }
           : null
+      // v4: as imagens NÃO entram mais aqui — vivem no IndexedDB (efeitos
+      // abaixo), esse payload fica pequeno e nunca estoura a cota do
+      // localStorage sozinho.
       const payload: PersistedState = {
-        v: 2,
+        v: 4,
         view,
         realism,
         knockout,
-        designSrc,
         transforms: { front: toPersisted(transforms.front), back: toPersisted(transforms.back) },
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload))
     } catch (err) {
-      // quota estourada (estampa grande em base64) / localStorage indisponível
       console.warn('[MockupDrop] falha ao salvar estado no localStorage:', err)
       if (!storageWarnedRef.current) {
         storageWarnedRef.current = true
         showError('Não foi possível salvar automaticamente (armazenamento local cheio ou indisponível).')
       }
     }
-  }, [hydrated, scale, view, realism, knockout, designSrc, transforms, showError])
+  }, [hydrated, scale, view, realism, knockout, transforms, showError])
+
+  // ─── Persiste cada estampa no IndexedDB quando ela muda ───────────────────
+  useEffect(() => {
+    if (!hydrated) return
+    void setDesign('front', designSrcs.front)
+  }, [hydrated, designSrcs.front])
+  useEffect(() => {
+    if (!hydrated) return
+    void setDesign('back', designSrcs.back)
+  }, [hydrated, designSrcs.back])
 
   // ─── Recalcula a estampa com knockout de preto (preview + export) ─────────
   useEffect(() => {
@@ -336,14 +441,17 @@ export default function MockupEditor() {
   }, [view, scale])
 
   const handleFileUpload = useCallback(
-    (file: File) => {
+    // targetView: qual lado recebe a estampa — o padrão é o lado aberto na
+    // tela (upload manual); os pickers de lote passam 'front'/'back' explícito.
+    (file: File, targetView: ViewSide = view) => {
       const reader = new FileReader()
       reader.onload = (e) => {
         const src = e.target?.result as string
-        setDesignSrc(src)
-        // Estampa nova → posição default nos dois lados (frente e verso).
+        // Frente e verso são desenhos diferentes (ex.: logo no peito x arte
+        // no verso) — nunca a mesma imagem repetida dos dois lados.
+        setDesignSrcs((d) => ({ ...d, [targetView]: src }))
         const s = scale || 1
-        setTransforms({ front: defaultTransformFor('front', s), back: defaultTransformFor('back', s) })
+        setTransforms((t) => ({ ...t, [targetView]: defaultTransformFor(targetView, s) }))
         setSelected(true)
       }
       reader.onerror = () => {
@@ -351,7 +459,7 @@ export default function MockupEditor() {
       }
       reader.readAsDataURL(file)
     },
-    [scale, showError],
+    [view, scale, showError],
   )
 
   const handleDrop = useCallback(
@@ -369,10 +477,11 @@ export default function MockupEditor() {
   )
 
   const removeDesign = useCallback(() => {
-    setDesignSrc(null)
-    setTransforms({ front: null, back: null })
+    // Remove só a estampa do lado ativo — o outro lado continua intacto.
+    setDesignSrcs((d) => ({ ...d, [view]: null }))
+    setTransforms((t) => ({ ...t, [view]: null }))
     setSelected(false)
-  }, [])
+  }, [view])
 
   // ─── Atalhos de teclado ───────────────────────────────────────────────────
   useEffect(() => {
@@ -472,48 +581,62 @@ export default function MockupEditor() {
     [designSrc, processedDesignSrc, transform, containerSize.w, containerSize.h, view, realism, showError],
   )
 
-  // ─── Lote: seleciona N imagens, carrega a 1ª pro posicionamento normal ────
+  // ─── Lote pareado: seleciona N imagens pra um lado, carrega a 1ª pro
+  // posicionamento normal daquele lado (a lista do outro lado não mexe) ────
   const handleBatchFilesSelected = useCallback(
-    (files: FileList | File[]) => {
+    (targetView: ViewSide, files: FileList | File[]) => {
       const arr = Array.from(files).filter((f) => f.type.startsWith('image/'))
       if (!arr.length) {
         showError('Nenhuma imagem válida selecionada.')
         return
       }
-      setBatchFiles(arr)
-      handleFileUpload(arr[0])
+      if (targetView === 'front') setBatchFront(arr)
+      else setBatchBack(arr)
+      handleFileUpload(arr[0], targetView)
     },
     [handleFileUpload, showError],
   )
 
-  const clearBatch = useCallback(() => setBatchFiles([]), [])
+  const clearBatch = useCallback(() => {
+    setBatchFront([])
+    setBatchBack([])
+  }, [])
 
-  // Lote precisa das duas posições prontas (frente e verso) — já são
-  // preenchidas nos dois lados assim que uma estampa é carregada.
-  const batchReady = !!transforms.front && !!transforms.back
+  // Lote pareado precisa das duas listas com a MESMA quantidade (1ª da
+  // frente combina com a 1ª do verso = produto 001, e assim por diante) e
+  // das duas posições prontas.
+  const batchCountMismatch =
+    batchFront.length > 0 && batchBack.length > 0 && batchFront.length !== batchBack.length
+  const batchReady =
+    !!transforms.front &&
+    !!transforms.back &&
+    batchFront.length > 0 &&
+    batchBack.length > 0 &&
+    !batchCountMismatch
 
   const runBatchExport = useCallback(
     async (format: ExportFormat) => {
-      if (!batchFiles.length || !transforms.front || !transforms.back || !containerSize.w) return
+      if (!batchReady || !transforms.front || !transforms.back || !containerSize.w) return
       setBatchExporting(true)
-      setBatchProgress({ done: 0, total: batchFiles.length })
+      setBatchProgress({ done: 0, total: batchFront.length })
       try {
-        const result = await exportBatch(
-          batchFiles.map((file) => ({ file, name: file.name })),
-          {
-            garments: { front: GARMENT.front, back: GARMENT.back },
-            transforms: { front: transforms.front, back: transforms.back },
-            displayContainerW: containerSize.w,
-            displayContainerH: containerSize.h,
-            format,
-            realism,
-            knockout,
-            onProgress: (done, total) => setBatchProgress({ done, total }),
-          },
-        )
+        const pairs = batchFront.map((front, i) => ({
+          front: { file: front, name: front.name },
+          back: { file: batchBack[i], name: batchBack[i].name },
+        }))
+        const result = await exportBatch(pairs, {
+          garments: { front: GARMENT.front, back: GARMENT.back },
+          transforms: { front: transforms.front, back: transforms.back },
+          displayContainerW: containerSize.w,
+          displayContainerH: containerSize.h,
+          format,
+          realism,
+          knockout,
+          onProgress: (done, total) => setBatchProgress({ done, total }),
+        })
         if (result.failed.length) {
           showError(
-            `${result.failed.length} de ${batchFiles.length} estampa(s) falharam e ficaram de fora do .zip: ${result.failed.join(', ')}`,
+            `${result.failed.length} produto(s) falharam e ficaram de fora do .zip: ${result.failed.join('; ')}`,
           )
         }
       } catch (err) {
@@ -524,7 +647,7 @@ export default function MockupEditor() {
         setBatchProgress(null)
       }
     },
-    [batchFiles, transforms, containerSize.w, containerSize.h, realism, knockout, showError],
+    [batchReady, batchFront, batchBack, transforms, containerSize.w, containerSize.h, realism, knockout, showError],
   )
 
   // ─── CSV de importação do Shopify (metadados — sem imagem, ver lib/shopifyCsv) ──
@@ -535,8 +658,8 @@ export default function MockupEditor() {
   const [csvQty, setCsvQty] = useState('')
 
   const downloadShopifyCsv = useCallback(() => {
-    if (!batchFiles.length) return
-    const rows = batchFiles.map((_, i) => ({
+    if (!batchReady) return
+    const rows = batchFront.map((_, i) => ({
       num: String(i + 1).padStart(3, '0'),
       vendor: csvVendor,
       productType: csvType,
@@ -545,7 +668,7 @@ export default function MockupEditor() {
       inventoryQty: csvQty,
     }))
     downloadCsv(buildShopifyCsv(rows), `shopify-produtos-${Date.now()}.csv`)
-  }, [batchFiles, csvVendor, csvType, csvTags, csvPrice, csvQty])
+  }, [batchReady, batchFront, csvVendor, csvType, csvTags, csvPrice, csvQty])
 
   const garmentView = GARMENT[view]
   const printArea = garmentView.printArea
@@ -767,7 +890,11 @@ export default function MockupEditor() {
                 margin: '0 0 10px 0',
               }}
             >
-              ESTAMPA
+              ESTAMPA — {view === 'front' ? 'FRENTE' : 'VERSO'}
+            </p>
+            <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: 1.5 }}>
+              Vale só pra este lado — {view === 'front' ? 'o verso' : 'a frente'} tem a própria
+              estampa, independente.
             </p>
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -783,7 +910,9 @@ export default function MockupEditor() {
                 fontWeight: 600,
               }}
             >
-              {designSrc ? '🔄 Trocar estampa' : '⬆ Upload PNG / SVG'}
+              {designSrc
+                ? `🔄 Trocar estampa (${view === 'front' ? 'frente' : 'verso'})`
+                : `⬆ Upload PNG / SVG (${view === 'front' ? 'frente' : 'verso'})`}
             </button>
             <input
               ref={fileInputRef}
@@ -812,12 +941,12 @@ export default function MockupEditor() {
                   fontWeight: 700,
                 }}
               >
-                🗑 Remover estampa
+                🗑 Remover estampa ({view === 'front' ? 'frente' : 'verso'})
               </button>
             )}
           </div>
 
-          {/* Lote */}
+          {/* Lote pareado: 2 listas (frente/verso), combinadas pela ordem */}
           <div>
             <p
               style={{
@@ -828,51 +957,51 @@ export default function MockupEditor() {
                 margin: '0 0 10px 0',
               }}
             >
-              LOTE (VÁRIAS ESTAMPAS)
+              LOTE PAREADO (FRENTE + VERSO)
             </p>
-            <button
-              onClick={() => batchInputRef.current?.click()}
-              disabled={batchExporting}
-              style={{
-                width: '100%',
-                padding: '14px',
-                border: '1.5px dashed var(--border)',
-                borderRadius: '10px',
-                background: 'var(--surface2)',
-                color: 'var(--text)',
-                cursor: batchExporting ? 'not-allowed' : 'pointer',
-                fontSize: '0.85rem',
-                fontWeight: 600,
-              }}
-            >
-              {batchFiles.length ? `🔄 Trocar lote (${batchFiles.length})` : '🗂 Selecionar várias imagens'}
-            </button>
-            <input
-              ref={batchInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const files = e.target.files
-                if (files && files.length) handleBatchFilesSelected(files)
-                e.target.value = ''
-              }}
-            />
+            <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: 1.5 }}>
+              Seleciona uma lista de imagens pra frente e outra pro verso — a 1ª de cada vira o produto
+              001, a 2ª o 002, etc. As duas listas precisam ter a mesma quantidade.
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <BatchPicker
+                label="Lote — Frente"
+                count={batchFront.length}
+                disabled={batchExporting}
+                inputRef={batchFrontInputRef}
+                onFiles={(files) => handleBatchFilesSelected('front', files)}
+              />
+              <BatchPicker
+                label="Lote — Verso"
+                count={batchBack.length}
+                disabled={batchExporting}
+                inputRef={batchBackInputRef}
+                onFiles={(files) => handleBatchFilesSelected('back', files)}
+              />
+            </div>
 
-            {batchFiles.length > 0 && (
+            {(batchFront.length > 0 || batchBack.length > 0) && (
               <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
-                  {batchFiles.length} estampas carregadas — a 1ª já está no canvas. Ajuste a posição na
-                  frente <b style={{ color: 'var(--text)' }}>e</b> no verso (troca de lado acima) e gere
-                  o lote: sai frente + verso de cada estampa, numeradas (001-frente.png,
-                  001-verso.png...).
-                </p>
+                {batchCountMismatch ? (
+                  <p style={{ fontSize: '0.7rem', color: '#ffb4b4', margin: 0, lineHeight: 1.5, fontWeight: 600 }}>
+                    Quantidade diferente: frente tem {batchFront.length}, verso tem {batchBack.length}.
+                    Ajusta as duas listas pra ficarem com o mesmo número antes de gerar.
+                  </p>
+                ) : (
+                  batchReady && (
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                      {batchFront.length} produtos prontos — a 1ª imagem de cada lista já está no canvas.
+                      Ajuste a posição na frente <b style={{ color: 'var(--text)' }}>e</b> no verso
+                      (troca de lado acima) e gere o lote: sai frente + verso de cada produto, numeradas
+                      (001-frente.png, 001-verso.png...).
+                    </p>
+                  )
+                )}
 
                 {batchExporting ? (
                   <div>
                     <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text)', margin: '0 0 6px 0' }}>
-                      Gerando {batchProgress?.done ?? 0}/{batchProgress?.total ?? batchFiles.length}...
+                      Gerando {batchProgress?.done ?? 0}/{batchProgress?.total ?? batchFront.length}...
                     </p>
                     <div
                       style={{
@@ -886,7 +1015,7 @@ export default function MockupEditor() {
                         style={{
                           height: '100%',
                           width: `${Math.round(
-                            ((batchProgress?.done ?? 0) / (batchProgress?.total || batchFiles.length)) * 100,
+                            ((batchProgress?.done ?? 0) / (batchProgress?.total || batchFront.length)) * 100,
                           )}%`,
                           background: 'var(--accent)',
                           transition: 'width 150ms linear',
@@ -937,11 +1066,15 @@ export default function MockupEditor() {
                 >
                   Limpar lote
                 </button>
+              </div>
+            )}
 
-                {/* CSV de importação do Shopify — só metadados, sem imagem */}
+            {/* CSV de importação do Shopify — só metadados, sem imagem */}
+            {batchReady && (
+              <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 <div style={{ height: '1px', background: 'var(--border)', margin: '4px 0' }} />
                 <p style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--text-muted)', margin: 0 }}>
-                  CSV SHOPIFY ({batchFiles.length} produtos)
+                  CSV SHOPIFY ({batchFront.length} produtos)
                 </p>
                 <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
                   Cria os produtos em rascunho (Configurações → Importar produtos). Imagem não vai no
