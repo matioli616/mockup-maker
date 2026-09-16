@@ -336,27 +336,25 @@ export default function MockupEditor() {
     setBatchBack([])
   }, [])
 
-  // Lote pareado precisa das duas listas com a MESMA quantidade (1ª da
-  // frente combina com a 1ª do verso = produto 001, e assim por diante) e
-  // das duas posições prontas.
-  const batchCountMismatch =
-    batchFront.length > 0 && batchBack.length > 0 && batchFront.length !== batchBack.length
+  // Lote pareado: as duas listas podem ter quantidades diferentes — combinam
+  // pela ordem (1ª da frente com 1ª do verso = produto 001, e assim por
+  // diante) e um produto sem imagem de um lado sai só com o outro. Só exige
+  // a posição do lado que de fato tem alguma imagem no lote.
+  const batchTotal = Math.max(batchFront.length, batchBack.length)
   const batchReady =
-    !!transforms.front &&
-    !!transforms.back &&
-    batchFront.length > 0 &&
-    batchBack.length > 0 &&
-    !batchCountMismatch
+    batchTotal > 0 &&
+    (batchFront.length === 0 || !!transforms.front) &&
+    (batchBack.length === 0 || !!transforms.back)
 
   const runBatchExport = useCallback(
     async (format: ExportFormat) => {
-      if (!batchReady || !transforms.front || !transforms.back || !containerSize.w) return
+      if (!batchReady || !containerSize.w) return
       setBatchExporting(true)
-      setBatchProgress({ done: 0, total: batchFront.length })
+      setBatchProgress({ done: 0, total: batchTotal })
       try {
-        const pairs = batchFront.map((front, i) => ({
-          front: { file: front, name: front.name },
-          back: { file: batchBack[i], name: batchBack[i].name },
+        const pairs = Array.from({ length: batchTotal }, (_, i) => ({
+          front: batchFront[i] ? { file: batchFront[i], name: batchFront[i].name } : undefined,
+          back: batchBack[i] ? { file: batchBack[i], name: batchBack[i].name } : undefined,
         }))
         const result = await exportBatch(pairs, {
           garments: { front: GARMENT.front, back: GARMENT.back },
@@ -393,7 +391,7 @@ export default function MockupEditor() {
 
   const downloadShopifyCsv = useCallback(() => {
     if (!batchReady) return
-    const rows = batchFront.map((_, i) => ({
+    const rows = Array.from({ length: batchTotal }, (_, i) => ({
       num: String(i + 1).padStart(3, '0'),
       vendor: csv.vendor,
       productType: csv.type,
@@ -402,7 +400,7 @@ export default function MockupEditor() {
       inventoryQty: csv.qty,
     }))
     downloadCsv(buildShopifyCsv(rows), `shopify-produtos-${Date.now()}.csv`)
-  }, [batchReady, batchFront, csv])
+  }, [batchReady, batchTotal, csv])
 
   const garmentView = GARMENT[view]
   const printArea = garmentView.printArea
@@ -442,7 +440,7 @@ export default function MockupEditor() {
           batchBackInputRef={batchBackInputRef}
           batchExporting={batchExporting}
           batchProgress={batchProgress}
-          batchCountMismatch={batchCountMismatch}
+          batchTotal={batchTotal}
           batchReady={batchReady}
           onBatchFiles={handleBatchFilesSelected}
           onClearBatch={clearBatch}

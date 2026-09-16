@@ -11,18 +11,20 @@ export interface BatchItem {
 
 // Um par por produto: a estampa da frente e a do verso daquele produto —
 // combinadas pela ordem em que o usuário selecionou cada lista (a N-ésima
-// da frente com a N-ésima do verso).
+// da frente com a N-ésima do verso). As listas podem ter quantidades
+// diferentes — um produto sem imagem de um lado sai só com o outro.
 export interface BatchPair {
-  front: BatchItem
-  back: BatchItem
+  front?: BatchItem
+  back?: BatchItem
 }
 
 const VIEWS: ViewSide[] = ['front', 'back']
 
 export interface BatchOptions {
   garments: Record<ViewSide, GarmentView>
-  // transform de cada lado — os dois obrigatórios, já ajustados no editor.
-  transforms: Record<ViewSide, DesignTransform>
+  // transform de cada lado — só precisa existir pro lado que tem alguma
+  // imagem no lote (o outro pode ficar null se aquele lado não foi usado).
+  transforms: Record<ViewSide, DesignTransform | null>
   displayContainerW: number
   displayContainerH: number
   format: ExportFormat
@@ -55,12 +57,19 @@ export async function exportBatch(pairs: BatchPair[], opts: BatchOptions): Promi
   for (let i = 0; i < total; i++) {
     const num = String(i + 1).padStart(3, '0')
     const pair = pairs[i]
-    try {
-      for (const view of VIEWS) {
-        const item = pair[view]
+
+    for (const view of VIEWS) {
+      const item = pair[view]
+      if (!item) continue // produto sem estampa desse lado — sai só com o outro
+      const t = opts.transforms[view]
+      if (!t) {
+        // lado sem posição ajustada no editor — não dá pra compor, pula
+        failed.push(`${item.name} (${VIEW_LABEL[view]}: posição não ajustada)`)
+        continue
+      }
+      try {
         const raw = await fileToDataURL(item.file)
         const designSrc = await applyBlackKnockout(raw, opts.knockout)
-        const t = opts.transforms[view]
         const canvas = await composeMockup({
           garmentView: opts.garments[view],
           designSrc,
@@ -78,11 +87,11 @@ export async function exportBatch(pairs: BatchPair[], opts: BatchOptions): Promi
         })
         const blob = await canvasToBlob(canvas)
         zip.file(`${num}-${VIEW_LABEL[view]}.png`, blob)
+      } catch (err) {
+        // um lado ruim não pode derrubar o outro lado nem os outros produtos
+        console.error(`[batchExport] falha ao processar "${item.name}" (produto ${num}, ${VIEW_LABEL[view]}):`, err)
+        failed.push(`${item.name} (${VIEW_LABEL[view]})`)
       }
-    } catch (err) {
-      // um par ruim no lote não pode derrubar os outros
-      console.error(`[batchExport] falha ao processar par "${pair.front.name}" / "${pair.back.name}":`, err)
-      failed.push(`${pair.front.name} / ${pair.back.name}`)
     }
 
     opts.onProgress?.(i + 1, total)

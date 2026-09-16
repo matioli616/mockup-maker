@@ -40,7 +40,7 @@ export default function EditorSidebar({
   batchBackInputRef,
   batchExporting,
   batchProgress,
-  batchCountMismatch,
+  batchTotal,
   batchReady,
   onBatchFiles,
   onClearBatch,
@@ -76,7 +76,7 @@ export default function EditorSidebar({
   batchBackInputRef: RefObject<HTMLInputElement | null>
   batchExporting: boolean
   batchProgress: { done: number; total: number } | null
-  batchCountMismatch: boolean
+  batchTotal: number
   batchReady: boolean
   onBatchFiles: (targetView: ViewSide, files: FileList) => void
   onClearBatch: () => void
@@ -175,7 +175,8 @@ export default function EditorSidebar({
         <p style={SECTION_LABEL_STYLE}>LOTE PAREADO (FRENTE + VERSO)</p>
         <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: '0 0 10px 0', lineHeight: 1.5 }}>
           Seleciona uma lista de imagens pra frente e outra pro verso — a 1ª de cada vira o produto
-          001, a 2ª o 002, etc. As duas listas precisam ter a mesma quantidade.
+          001, a 2ª o 002, etc. As listas podem ter quantidades diferentes: o que faltar de um lado
+          sai só com o outro.
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           <BatchPicker
@@ -196,33 +197,32 @@ export default function EditorSidebar({
 
         {(batchFront.length > 0 || batchBack.length > 0) && (
           <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {batchCountMismatch ? (
-              <p style={{ fontSize: '0.7rem', color: '#ffb4b4', margin: 0, lineHeight: 1.5, fontWeight: 600 }}>
-                Quantidade diferente: frente tem {batchFront.length}, verso tem {batchBack.length}.
-                Ajusta as duas listas pra ficarem com o mesmo número antes de gerar.
+            {batchFront.length !== batchBack.length && (
+              <p style={{ fontSize: '0.7rem', color: '#ffcf8a', margin: 0, lineHeight: 1.5, fontWeight: 600 }}>
+                Frente tem {batchFront.length}, verso tem {batchBack.length}. Os {Math.abs(batchFront.length - batchBack.length)}{' '}
+                produto(s) a mais em {batchFront.length > batchBack.length ? 'frente' : 'verso'} saem sem o outro lado.
               </p>
-            ) : (
-              batchReady && (
-                <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
-                  {batchFront.length} produtos prontos — a 1ª imagem de cada lista já está no canvas.
-                  Ajuste a posição na frente <b style={{ color: 'var(--text)' }}>e</b> no verso
-                  (troca de lado acima) e gere o lote: sai frente + verso de cada produto, numeradas
-                  (001-frente.png, 001-verso.png...).
-                </p>
-              )
+            )}
+            {batchReady && (
+              <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
+                {batchTotal} produto(s) prontos — a 1ª imagem de cada lista já está no canvas.
+                Ajuste a posição na frente <b style={{ color: 'var(--text)' }}>e</b> no verso
+                (troca de lado acima) e gere o lote: sai frente e/ou verso de cada produto, numeradas
+                (001-frente.png, 001-verso.png...).
+              </p>
             )}
 
             {batchExporting ? (
               <div>
                 <p style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text)', margin: '0 0 6px 0' }}>
-                  Gerando {batchProgress?.done ?? 0}/{batchProgress?.total ?? batchFront.length}...
+                  Gerando {batchProgress?.done ?? 0}/{batchProgress?.total ?? batchTotal}...
                 </p>
                 <div style={{ height: '6px', background: 'var(--border)', borderRadius: '3px', overflow: 'hidden' }}>
                   <div
                     style={{
                       height: '100%',
                       width: `${Math.round(
-                        ((batchProgress?.done ?? 0) / (batchProgress?.total || batchFront.length)) * 100,
+                        ((batchProgress?.done ?? 0) / (batchProgress?.total || batchTotal)) * 100,
                       )}%`,
                       background: 'var(--accent)',
                       transition: 'width 150ms linear',
@@ -281,7 +281,7 @@ export default function EditorSidebar({
           <div style={{ marginTop: '10px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {DIVIDER}
             <p style={{ fontSize: '0.7rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--text-muted)', margin: 0 }}>
-              CSV SHOPIFY ({batchFront.length} produtos)
+              CSV SHOPIFY ({batchTotal} produtos)
             </p>
             <p style={{ fontSize: '0.68rem', color: 'var(--text-muted)', margin: 0, lineHeight: 1.5 }}>
               Cria os produtos em rascunho (Configurações → Importar produtos). Imagem não vai no
